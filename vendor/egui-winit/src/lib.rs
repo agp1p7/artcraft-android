@@ -594,6 +594,12 @@ impl State {
                     consumed: self.egui_ctx.egui_wants_pointer_input(),
                 }
             }
+
+            #[allow(unreachable_patterns)]
+            _ => EventResponse {
+                repaint: false,
+                consumed: false,
+            },
         }
     }
 
@@ -2442,5 +2448,7 @@ pub fn short_window_event_description(event: &winit::event::WindowEvent) -> &'st
         WindowEvent::ThemeChanged { .. } => "WindowEvent::ThemeChanged",
         WindowEvent::Occluded { .. } => "WindowEvent::Occluded",
         WindowEvent::PanGesture { .. } => "WindowEvent::PanGesture",
+        #[allow(unreachable_patterns)]
+        _ => "WindowEvent::Unknown",
     }
 }

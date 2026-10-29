@@ -267,6 +267,35 @@ jobs:
           name: artcraft-all-apks
           path: all-apks/*.apk
 
+      - name: Download all build log artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: all-logs
+          pattern: '*-build-log'
+          merge-multiple: true
+
+      - name: Bundle build logs if 2 or more
+        id: bundle_logs
+        run: |
+          mkdir -p all-logs
+          log_count=$(find all-logs -type f \( -name "*.log" -o -name "*.txt" \) | wc -l)
+          if [ "$log_count" -ge 2 ]; then
+            echo "Found $log_count log files. Bundling into all-build-logs.zip..."
+            find all-logs -type f \( -name "*.log" -o -name "*.txt" \) -exec zip -j all-build-logs.zip {} +
+            echo "has_logs_zip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found $log_count log files (< 2). Skipping zip bundle."
+            echo "has_logs_zip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload bundled build logs
+        if: steps.bundle_logs.outputs.has_logs_zip == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-build-logs
+          path: all-build-logs.zip
+
       - name: Create Release (Manual Dispatch Only)
         if: github.event_name == 'workflow_dispatch' && inputs.create_release && steps.check_apks.outputs.has_apks == 'true'
         uses: softprops/action-gh-release@v2
