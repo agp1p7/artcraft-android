@@ -1,5 +1,8 @@
 # ArtCraft Android
 
+> [!NOTE]
+> **About this project:** We are an independent group of people who love ArtCraft very much and want to make these apps available on Android. We are not affiliated with, related to, or endorsed by ArtCraft / Storytold, and all our ports are completely unofficial.
+
 **The full ArtCraft PC experience, now on Android.**
 
 [**Download the apps**](https://github.com/MostafaXS1/artcraft-android/releases/) · [ArtCraft website](https://getartcraft.com/) · [Explore the apps](https://getartcraft.com/apps)
@@ -175,3 +178,15 @@ Builds are signed with a local development keystore stored under `keys/`. Keep t
 Do not use the local development key for public distribution. Use a separately managed release-signing key for public releases.
 
 Existing source checkouts are reused to preserve local Android port work. The build does not automatically reset or overwrite local source changes. Update existing checkouts deliberately with Git and review the diff before switching versions or incorporating upstream changes.
+
+## We Need Help Testing! (Call for Professionals & Users)
+
+Porting **14 complete creative desktop applications** to Android is a huge undertaking, and it is very hard for our small group to thoroughly test every single feature, workflow, and edge case across all 14 apps by ourselves.
+
+We don't have deep domain expertise across all of these diverse tools (DAW music production in SoundCraft, CAD drafting in CADCraft, video editing in FilmCraft, 3D texturing in SubCraft, vector graphics, desktop publishing, etc.). 
+
+**We would love help from professionals and everyday users!**
+* Please download the APKs, try your normal workflows, and tell us:
+  * **What works smoothly on PC but is broken, missing, or buggy on Android?**
+  * **What needs improvement with touch gestures, tablet layouts, or keyboard/mouse navigation?**
+* If you run into issues, crashes, or quirks, please [open an issue on GitHub](https://github.com/MostafaXS1/artcraft-android/issues) with your device info and reproduction steps. Every piece of feedback helps!

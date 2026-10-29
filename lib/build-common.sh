@@ -574,21 +574,6 @@ if app == "photocraft":
         '            export_presets: take(&mut m, "export_presets"),\n',
     ):
         fixed.append("crates/engine/src/presets/mod.rs")
-elif app == "cadcraft":
-    # Upstream Dependabot merged PR #1957 which bumped egui to 0.37, harfrust to 0.14,
-    # quick-xml to 0.42, and rstar to 0.13, breaking the codebase against those new APIs.
-    # Revert them to the 0.36 ecosystem until cadcraft repairs them upstream.
-    for rel, old, new in [
-        ("Cargo.toml", 'egui = "0.37"', 'egui = "0.36"'),
-        ("Cargo.toml", 'egui_kittest = "0.37"', 'egui_kittest = "0.36"'),
-        ("Cargo.toml", 'eframe = { version = "0.37", default-features = false }', 'eframe = { version = "0.36", default-features = false }'),
-        ("Cargo.toml", 'egui-wgpu = "0.37"', 'egui-wgpu = "0.36"'),
-        ("Cargo.toml", 'harfrust = "0.14"', 'harfrust = "0.13.3"'),
-        ("Cargo.toml", 'quick-xml = "0.42"', 'quick-xml = "0.41"'),
-        ("crates/engine/Cargo.toml", 'rstar = { version = "0.13", default-features = false }', 'rstar = { version = "0.12", default-features = false }'),
-    ]:
-        if fix(rel, old, new):
-            fixed.append(f"{rel} ({old} -> {new})")
 
 if fixed:
     print(f"  Repaired upstream compile errors still present in {title}: {', '.join(fixed)}")
@@ -626,7 +611,7 @@ marker = android_dir / ".artcraft-android-builder-generated"
 # Bump this whenever the generated launcher template changes so stale wrappers (which live in the
 # source checkout and would otherwise be preserved forever) are regenerated automatically instead
 # of failing against a newer app API.
-GENERATOR_VERSION = "59"
+GENERATOR_VERSION = "62"
 
 # A complete adapter supplied by the user wins over auto-detection. This folder is maintained
 # inside the builder, while its contents are copied into this source checkout.
@@ -1872,6 +1857,8 @@ fn saf_services(bridge: saf::Bridge, state: Arc<SafState>, _inbox: SafInbox) -> 
     Services {
         pick_open: Some(Box::new(move || saf_open_paths(&open_bridge, &open_state).into_iter().next())),
         pick_save: Some(Box::new(move |name: &str| saf_save_path(&save_bridge, &save_state, name))),
+        pick_lisp: None,
+        no_file_system: false,
     }
 }
 ''',
@@ -2674,7 +2661,15 @@ try:
         "deckcraft": ("audio", "audio.rs", ("deckcraft-media = { workspace = true }",)),
         "soundcraft": ("audio", "audio.rs", ()),
     }
-    cpal_dep = "".join(f"{dep}\n" for dep in ('cpal = "0.16"', *AUDIO_MODULES[app][2])) if app in AUDIO_MODULES else ''
+    cpal_ver = "0.18" if app == "soundcraft" else "0.16"
+    try:
+        manifest_text = (src / "Cargo.toml").read_text()
+        m = re.search(r'^\s*cpal\s*=\s*"([^"]+)"', manifest_text, re.MULTILINE)
+        if m:
+            cpal_ver = m.group(1)
+    except Exception:
+        pass
+    cpal_dep = "".join(f"{dep}\n" for dep in (f'cpal = "{cpal_ver}"', *AUDIO_MODULES[app][2])) if app in AUDIO_MODULES else ''
     # EffectCraft's Android launcher must build a fully wired session (`effectcraft-host`), not a
     # bare `Session::new()`: without the host's importer and exporter, every import and export fails
     # with "media import is not available in this build" / "export is not available in this build".
@@ -3059,7 +3054,13 @@ fn apply_android_modifiers(state: &mut egui::Modifiers, raw: &mut egui::RawInput
                 }
                 state.mac_cmd = false;
                 state.command = state.ctrl;
-                *modifiers = *state;
+                // Backspace/Delete always pass through with clean modifiers on Android,
+                // so Ctrl/Alt state never blocks deleting characters.
+                if matches!(*key, egui::Key::Backspace | egui::Key::Delete) {
+                    *modifiers = egui::Modifiers::default();
+                } else {
+                    *modifiers = *state;
+                }
                 kept.push(event);
             }
             egui::Event::PointerButton { modifiers, .. } => {

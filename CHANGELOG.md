@@ -3,6 +3,10 @@
 ## v37 — 2026-10-20
 
 ### Fixed
+- Fixed clean-clone and CI build failures for `soundcraft` and `cadcraft`:
+  - Resolved `cpal` / `alsa` native library collision on SoundCraft by synchronizing launcher cpal dependency with upstream workspace (`cpal = "0.18"`).
+  - Removed obsolete `cadcraft` repair hooks (downgrading `harfrust`, `quick-xml`, and `rstar`) now that upstream `v0.13.0` natively supports them.
+  - Bumped `GENERATOR_VERSION` to 60 to automatically regenerate stale launchers.
 - Two-way Storage Access Framework (SAF) auto-sync and document autosave across all 14 apps. Files
   opened via system file pickers or incoming intents (`ACTION_VIEW`/`ACTION_SEND`) are now tracked by
   path in `SaveMirror`. The periodic 2-second background tick and focus-lost (`WindowFocused(false)`) /
