@@ -1,20 +1,34 @@
 import sys
 from pathlib import Path
 
+def replace_checked(path, old, new):
+    text = path.read_text()
+    if new in text:
+        return
+    if text.count(old) != 1:
+        raise RuntimeError(f'Unexpected source format: {path}; refusing to patch')
+    path.write_text(text.replace(old, new, 1))
+
 def patch(root):
     cargo = root / "Cargo.toml"
     source = root / "src/lib.rs"
-    c, s = cargo.read_text(), source.read_text()
-    old_dep = 'lightcraft-engine = { path = "../../crates/engine" }'
-    new_dep = 'lightcraft-engine = { path = "../../crates/engine", features = ["rawnind-model"] }'
-    old_init = 'Session::new().with_fs()'
-    new_init = 'Session::new().with_fs().with_default_denoise_models()'
-    for text, old, new in [(c, old_dep, new_dep), (s, old_init, new_init)]:
-        if new not in text and text.count(old) != 1:
-            raise RuntimeError("Unexpected launcher format; refusing to patch")
-    cargo.write_text(c.replace(old_dep, new_dep))
-    source.write_text(s if new_init in s else s.replace(old_init, new_init))
-    print("Experimental denoise runtime, model catalogue and directory enabled; device test required")
+    replace_checked(cargo,
+        'lightcraft-engine = { path = "../../crates/engine" }',
+        'lightcraft-engine = { path = "../../crates/engine", features = ["rawnind-model"] }')
+    replace_checked(source,
+        'Session::new().with_fs()',
+        'Session::new().with_fs().with_default_denoise_models()')
+    upstream = root.parents[1]
+    replace_checked(upstream / 'crates/gpu/src/lib.rs',
+        '    depth == lightcraft_pipeline::OutputDepth::U8 && !device_proof && overlay != lightcraft_pipeline::Overlay::HdrRange',
+        '    // Experimental Android workaround: use the reference CPU image pipeline.\n'
+        '    // This does not disable the UI compositor or independently configured AI inference.\n'
+        '    !cfg!(target_os = "android") && depth == lightcraft_pipeline::OutputDepth::U8 && !device_proof && overlay != lightcraft_pipeline::Overlay::HdrRange')
+    replace_checked(upstream / 'crates/codecs/src/encode.rs',
+        '    if subsampling != ChromaSubsampling::S422 {',
+        '    // Experimental Android workaround: retain requested sampling, use serial jpeg-encoder.\n'
+        '    if subsampling != ChromaSubsampling::S422 && !cfg!(target_os = "android") {')
+    print('Experimental Android export workaround applied: CPU render and serial JPEG; root cause unconfirmed; device validation required')
 
 if __name__ == "__main__":
     patch(Path(sys.argv[1]))
