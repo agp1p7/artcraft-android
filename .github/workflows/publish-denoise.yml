@@ -1,0 +1,73 @@
+name: Publish tested LightCraft denoise APK
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-denoise.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-lightcraft-denoise-test-0.1
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: agp1p7/artcraft-android
+    steps:
+      - name: Verify successful source build
+        run: |
+          test "$(gh api repos/$GH_REPO/actions/runs/40874221518 --jq .conclusion)" = success
+          test "$(gh api repos/$GH_REPO/actions/runs/40874221518 --jq .head_sha)" = bb24ad4a13c2fd4d1bf8cf1941fb15e3c849dcd2
+      - name: Download tested APK (do not rebuild)
+        run: |
+          mkdir -p dist
+          gh run download 40874221518 --repo "$GH_REPO" --name lightcraft-0.14.0-experimental-denoise --dir dist
+          shopt -s nullglob
+          apks=(dist/*.apk)
+          test ${#apks[@]} -eq 1
+          unzip -tq "${apks[0]}"
+          cd dist
+          sha256sum *.apk > SHA256SUMS.txt
+      - name: Write release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          ## LightCraft Android — AI Denoise 實驗版 0.1
+          非官方社群修補測試版，非 LightCraft／ArtCraft 官方發行。
+
+          ### 版本與來源
+          - LightCraft 0.14.0；Android 移植來源：MostafaXS1/artcraft-android。
+          - 本版原始碼：https://github.com/agp1p7/artcraft-android/tree/bb24ad4a13c2fd4d1bf8cf1941fb15e3c849dcd2
+          - 上游：https://github.com/storytold/lightcraft/tree/v0.14.0
+          - Android 移植：https://github.com/MostafaXS1/artcraft-android
+          - APK 直接取自成功建置 40874221518，不重新編譯。
+
+          ### 修補內容
+          - 初始化降噪模型儲存目錄。
+          - 啟用 AI 降噪推論功能及 RawNIND 模型下載選項。
+
+          ### 安裝與使用
+          1. 下載下方 APK，依 Android 提示允許來源安裝。
+          2. 開啟 LightCraft-Denoise-Test → Settings → AI Denoise。
+          3. 閱讀並確認模型授權，另外下載 RawNIND 模型。
+          4. 先使用一張支援的 Bayer RAW 測試。
+
+          ### 限制與注意
+          - ARM64 Android debug 測試建置，不是正式穩定版。
+          - 套件名稱：com.artcraft.lightcraft.denoisetest。
+          - 已有一位使用者回報可用，未廣泛驗證其他裝置、RAW 格式、GPU 與批次作業。
+          - 請保留原始照片並先做小量測試。
+          - APK 不內附模型權重；模型須另行下載並遵守其授權。
+          - 後續建置若更換簽署金鑰，可能無法直接覆蓋更新。
+          - 原專案的更新提示可能指向原移植版，並不代表本修補已合併。
+
+          ### 致謝與授權
+          本版基於上列開源專案；請參閱各專案及依賴的 LICENSE／NOTICE。本修補不變更原有授權，亦不代表原作者背書。
+          附件 SHA256SUMS.txt 可用於核對 APK 完整性。
+          NOTES
+      - name: Publish prerelease without replacing existing assets
+        run: |
+          gh release create lightcraft-denoise-test-0.1 dist/*.apk dist/SHA256SUMS.txt --repo "$GH_REPO" --target bb24ad4a13c2fd4d1bf8cf1941fb15e3c849dcd2 --title "LightCraft Android — AI Denoise 實驗版 0.1" --notes-file notes.md --prerelease --latest=false
