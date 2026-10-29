@@ -1,6 +1,7 @@
 use crate::dpi::{PhysicalPosition, PhysicalSize, Size};
 use crate::icon::Icon;
 use crate::keyboard::ModifiersState;
+use crate::platform_impl::platform::ime_caret::SystemCaret;
 use crate::platform_impl::platform::{event_loop, util, Fullscreen, SelectedCursor};
 use crate::window::{Theme, WindowAttributes};
 use bitflags::bitflags;
@@ -45,6 +46,7 @@ pub(crate) struct WindowState {
 
     pub ime_state: ImeState,
     pub ime_allowed: bool,
+    pub system_caret: SystemCaret,
 
     // Used by WM_NCACTIVATE, WM_SETFOCUS and WM_KILLFOCUS
     pub is_active: bool,
@@ -169,6 +171,7 @@ impl WindowState {
 
             ime_state: ImeState::Disabled,
             ime_allowed: false,
+            system_caret: SystemCaret::default(),
 
             is_active: false,
             is_focused: false,
@@ -238,7 +241,7 @@ impl MouseProperties {
             Err(e) => {
                 self.cursor_flags = old_flags;
                 return Err(e);
-            }
+            },
         }
 
         Ok(())
@@ -325,12 +328,20 @@ impl WindowFlags {
         }
 
         if new.contains(WindowFlags::VISIBLE) {
-            let flag = if !self.contains(WindowFlags::MARKER_ACTIVATE) {
-                self.set(WindowFlags::MARKER_ACTIVATE, true);
-                SW_SHOWNOACTIVATE
-            } else {
-                SW_SHOW
-            };
+            // WordCraft patch: a hidden window that becomes visible while maximized is shown with
+            // one `SW_MAXIMIZE`, and maximizing (below) waits until the window is visible
+            // (rust-windowing/winit#4587). `ShowWindow(SW_MAXIMIZE)` shows a hidden window, so
+            // restoring a maximized window that eframe keeps hidden until its first frame showed it
+            // unpainted (white) and disturbed its focus.
+            let flag =
+                if new.contains(WindowFlags::MAXIMIZED) && diff.contains(WindowFlags::VISIBLE) {
+                    SW_MAXIMIZE
+                } else if !self.contains(WindowFlags::MARKER_ACTIVATE) {
+                    self.set(WindowFlags::MARKER_ACTIVATE, true);
+                    SW_SHOWNOACTIVATE
+                } else {
+                    SW_SHOW
+                };
             unsafe {
                 ShowWindow(window, flag);
             }
@@ -359,28 +370,25 @@ impl WindowFlags {
             }
         }
 
-        if diff.contains(WindowFlags::MAXIMIZED) || new.contains(WindowFlags::MAXIMIZED) {
+        if (diff.contains(WindowFlags::MAXIMIZED) || new.contains(WindowFlags::MAXIMIZED))
+            && new.contains(WindowFlags::VISIBLE)
+            && !diff.contains(WindowFlags::VISIBLE)
+        {
             unsafe {
-                ShowWindow(
-                    window,
-                    match new.contains(WindowFlags::MAXIMIZED) {
-                        true => SW_MAXIMIZE,
-                        false => SW_RESTORE,
-                    },
-                );
+                ShowWindow(window, match new.contains(WindowFlags::MAXIMIZED) {
+                    true => SW_MAXIMIZE,
+                    false => SW_RESTORE,
+                });
             }
         }
 
         // Minimize operations should execute after maximize for proper window animations
         if diff.contains(WindowFlags::MINIMIZED) {
             unsafe {
-                ShowWindow(
-                    window,
-                    match new.contains(WindowFlags::MINIMIZED) {
-                        true => SW_MINIMIZE,
-                        false => SW_RESTORE,
-                    },
-                );
+                ShowWindow(window, match new.contains(WindowFlags::MINIMIZED) {
+                    true => SW_MINIMIZE,
+                    false => SW_RESTORE,
+                });
             }
 
             diff.remove(WindowFlags::MINIMIZED);
@@ -388,11 +396,7 @@ impl WindowFlags {
 
         if diff.contains(WindowFlags::CLOSABLE) || new.contains(WindowFlags::CLOSABLE) {
             let flags = MF_BYCOMMAND
-                | if new.contains(WindowFlags::CLOSABLE) {
-                    MF_ENABLED
-                } else {
-                    MF_DISABLED
-                };
+                | if new.contains(WindowFlags::CLOSABLE) { MF_ENABLED } else { MF_DISABLED };
 
             unsafe {
                 EnableMenuItem(GetSystemMenu(window, 0), SC_CLOSE, flags);
@@ -409,12 +413,7 @@ impl WindowFlags {
             let (style, style_ex) = new.to_window_styles();
 
             unsafe {
-                SendMessageW(
-                    window,
-                    event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(),
-                    1,
-                    0,
-                );
+                SendMessageW(window, event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(), 1, 0);
 
                 // This condition is necessary to avoid having an unrestorable window
                 if !new.contains(WindowFlags::MINIMIZED) {
@@ -435,12 +434,7 @@ impl WindowFlags {
 
                 // Refresh the window frame
                 SetWindowPos(window, 0, 0, 0, 0, 0, flags);
-                SendMessageW(
-                    window,
-                    event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(),
-                    0,
-                    0,
-                );
+                SendMessageW(window, event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(), 0, 0);
             }
         }
     }
@@ -458,10 +452,9 @@ impl WindowFlags {
 
             util::win_to_err({
                 let b_menu = GetMenu(hwnd) != 0;
-                if let (Some(get_dpi_for_window), Some(adjust_window_rect_ex_for_dpi)) = (
-                    *util::GET_DPI_FOR_WINDOW,
-                    *util::ADJUST_WINDOW_RECT_EX_FOR_DPI,
-                ) {
+                if let (Some(get_dpi_for_window), Some(adjust_window_rect_ex_for_dpi)) =
+                    (*util::GET_DPI_FOR_WINDOW, *util::ADJUST_WINDOW_RECT_EX_FOR_DPI)
+                {
                     let dpi = get_dpi_for_window(hwnd);
                     adjust_window_rect_ex_for_dpi(&mut rect, style, b_menu.into(), style_ex, dpi)
                 } else {
@@ -474,12 +467,7 @@ impl WindowFlags {
 
     pub fn adjust_size(self, hwnd: HWND, size: PhysicalSize<u32>) -> PhysicalSize<u32> {
         let (width, height): (u32, u32) = size.into();
-        let rect = RECT {
-            left: 0,
-            right: width as i32,
-            top: 0,
-            bottom: height as i32,
-        };
+        let rect = RECT { left: 0, right: width as i32, top: 0, bottom: height as i32 };
         let rect = self.adjust_rect(hwnd, rect).unwrap_or(rect);
 
         let outer_x = (rect.right - rect.left).abs();
@@ -525,12 +513,7 @@ impl CursorFlags {
                             // middle of the window.
                             let cx = (client_rect.left + client_rect.right) / 2;
                             let cy = (client_rect.top + client_rect.bottom) / 2;
-                            Some(RECT {
-                                left: cx,
-                                right: cx + 1,
-                                top: cy,
-                                bottom: cy + 1,
-                            })
+                            Some(RECT { left: cx, right: cx + 1, top: cy, bottom: cy + 1 })
                         }
                     } else if self.contains(CursorFlags::HIDDEN) {
                         // Confine the cursor to the center of the window if the cursor is hidden.
@@ -538,16 +521,11 @@ impl CursorFlags {
                         // the taskbar if the window borders or overlaps that.
                         let cx = (client_rect.left + client_rect.right) / 2;
                         let cy = (client_rect.top + client_rect.bottom) / 2;
-                        Some(RECT {
-                            left: cx,
-                            right: cx + 1,
-                            top: cy,
-                            bottom: cy + 1,
-                        })
+                        Some(RECT { left: cx, right: cx + 1, top: cy, bottom: cy + 1 })
                     } else {
                         Some(client_rect)
                     }
-                }
+                },
                 false => None,
             };
 

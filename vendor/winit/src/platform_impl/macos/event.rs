@@ -12,16 +12,23 @@ use crate::keyboard::{
     Key, KeyCode, KeyLocation, ModifiersKeys, ModifiersState, NamedKey, NativeKey, NativeKeyCode,
     PhysicalKey,
 };
+use crate::platform_impl::platform::command_key::{is_key_text, uc_modifier_state};
 use crate::platform_impl::platform::ffi;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyEventExtra {
     pub text_with_all_modifiers: Option<SmolStr>,
     pub key_without_modifiers: Key,
+    pub key_with_command: Key,
 }
 
 /// Ignores ALL modifiers.
 pub fn get_modifierless_char(scancode: u16) -> Key {
+    translate_key(scancode, 0)
+}
+
+/// The key's character in the current layout with `UCKeyTranslate`'s `modifiers`.
+fn translate_key(scancode: u16, modifiers: u32) -> Key {
     let mut string = [0; 16];
     let input_source;
     let layout;
@@ -44,7 +51,6 @@ pub fn get_modifierless_char(scancode: u16) -> Key {
 
     let mut result_len = 0;
     let mut dead_keys = 0;
-    let modifiers = 0;
     let translate_result = unsafe {
         ffi::UCKeyTranslate(
             layout,
@@ -63,10 +69,7 @@ pub fn get_modifierless_char(scancode: u16) -> Key {
         CFRelease(input_source as *mut c_void);
     }
     if translate_result != 0 {
-        tracing::error!(
-            "`UCKeyTranslate` returned with the non-zero value: {}",
-            translate_result
-        );
+        tracing::error!("`UCKeyTranslate` returned with the non-zero value: {}", translate_result);
         return Key::Unidentified(NativeKey::MacOS(scancode));
     }
     if result_len == 0 {
@@ -109,9 +112,7 @@ pub(crate) fn create_key_event(ns_event: &NSEvent, is_press: bool, is_repeat: bo
     // * Pressing CTRL SHIFT A: logical key should also be "A"
     // This is not easy to tease out of `NSEvent`, but we do our best.
 
-    let characters = unsafe { ns_event.characters() }
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let characters = unsafe { ns_event.characters() }.map(|s| s.to_string()).unwrap_or_default();
     let text_with_all_modifiers = if characters.is_empty() {
         None
     } else {
@@ -123,44 +124,55 @@ pub(crate) fn create_key_event(ns_event: &NSEvent, is_press: bool, is_repeat: bo
     };
 
     let key_from_code = code_to_key(physical_key, scancode);
-    let (logical_key, key_without_modifiers) = if matches!(key_from_code, Key::Unidentified(_)) {
-        // `get_modifierless_char/key_without_modifiers` ignores ALL modifiers.
-        let key_without_modifiers = get_modifierless_char(scancode);
+    let (logical_key, key_without_modifiers, key_with_command) =
+        if matches!(key_from_code, Key::Unidentified(_)) {
+            // `get_modifierless_char/key_without_modifiers` ignores ALL modifiers.
+            let key_without_modifiers = get_modifierless_char(scancode);
+            let command_table =
+                |shift| match translate_key(scancode, uc_modifier_state(shift, true)) {
+                    Key::Character(ch) if is_key_text(&ch) => Some(Key::Character(ch)),
+                    _ => None,
+                };
+            let key_with_command =
+                command_table(false).unwrap_or_else(|| key_without_modifiers.clone());
 
-        let modifiers = unsafe { ns_event.modifierFlags() };
-        let has_ctrl = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagControl);
-        let has_cmd = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagCommand);
+            let modifiers = unsafe { ns_event.modifierFlags() };
+            let has_ctrl = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagControl);
+            let has_cmd = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagCommand);
+            let has_shift = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagShift);
 
-        let logical_key = match text_with_all_modifiers.as_ref() {
-            // Only checking for ctrl and cmd here, not checking for alt because we DO want to
-            // include its effect in the key. For example if -on the German layout- one
-            // presses alt+8, the logical key should be "{"
-            // Also not checking if this is a release event because then this issue would
-            // still affect the key release.
-            Some(text) if !has_ctrl && !has_cmd => {
-                // Character heeding both SHIFT and ALT.
-                Key::Character(text.clone())
-            }
+            let logical_key = match text_with_all_modifiers.as_ref() {
+                // Only checking for ctrl and cmd here, not checking for alt because we DO want to
+                // include its effect in the key. For example if -on the German layout- one
+                // presses alt+8, the logical key should be "{"
+                // Also not checking if this is a release event because then this issue would
+                // still affect the key release.
+                Some(text) if !has_ctrl && !has_cmd => {
+                    // Character heeding both SHIFT and ALT.
+                    Key::Character(text.clone())
+                },
 
-            _ => match key_without_modifiers.as_ref() {
-                // Character heeding just SHIFT, ignoring ALT.
-                Key::Character(ch) => get_logical_key_char(ns_event, ch),
+                // With CMD, the character from the layout's CMD table, heeding SHIFT: on
+                // "Dvorak – QWERTY ⌘", CMD+V is reported as "v", not as the Dvorak "k"
+                // (storytold/pdfcraft#3655).
+                _ => match has_cmd.then(|| command_table(has_shift)).flatten() {
+                    Some(key) => key,
+                    None => match key_without_modifiers.as_ref() {
+                        // Character heeding just SHIFT, ignoring ALT.
+                        Key::Character(ch) => get_logical_key_char(ns_event, ch),
 
-                // Character ignoring ALL modifiers.
-                _ => key_without_modifiers.clone(),
-            },
+                        // Character ignoring ALL modifiers.
+                        _ => key_without_modifiers.clone(),
+                    },
+                },
+            };
+
+            (logical_key, key_without_modifiers, key_with_command)
+        } else {
+            (key_from_code.clone(), key_from_code.clone(), key_from_code)
         };
 
-        (logical_key, key_without_modifiers)
-    } else {
-        (key_from_code.clone(), key_from_code)
-    };
-
-    let text = if is_press {
-        logical_key.to_text().map(SmolStr::new)
-    } else {
-        None
-    };
+    let text = if is_press { logical_key.to_text().map(SmolStr::new) } else { None };
 
     let location = code_to_location(physical_key);
 
@@ -174,6 +186,7 @@ pub(crate) fn create_key_event(ns_event: &NSEvent, is_press: bool, is_repeat: bo
         platform_specific: KeyEventExtra {
             text_with_all_modifiers,
             key_without_modifiers,
+            key_with_command,
         },
     }
 }
@@ -320,36 +333,19 @@ pub(super) fn event_mods(event: &NSEvent) -> Modifiers {
     let mut state = ModifiersState::empty();
     let mut pressed_mods = ModifiersKeys::empty();
 
-    state.set(
-        ModifiersState::SHIFT,
-        flags.contains(NSEventModifierFlags::NSEventModifierFlagShift),
-    );
-    pressed_mods.set(
-        ModifiersKeys::LSHIFT,
-        flags.contains(NX_DEVICELSHIFTKEYMASK),
-    );
-    pressed_mods.set(
-        ModifiersKeys::RSHIFT,
-        flags.contains(NX_DEVICERSHIFTKEYMASK),
-    );
+    state
+        .set(ModifiersState::SHIFT, flags.contains(NSEventModifierFlags::NSEventModifierFlagShift));
+    pressed_mods.set(ModifiersKeys::LSHIFT, flags.contains(NX_DEVICELSHIFTKEYMASK));
+    pressed_mods.set(ModifiersKeys::RSHIFT, flags.contains(NX_DEVICERSHIFTKEYMASK));
 
     state.set(
         ModifiersState::CONTROL,
         flags.contains(NSEventModifierFlags::NSEventModifierFlagControl),
     );
-    pressed_mods.set(
-        ModifiersKeys::LCONTROL,
-        flags.contains(NX_DEVICELCTLKEYMASK),
-    );
-    pressed_mods.set(
-        ModifiersKeys::RCONTROL,
-        flags.contains(NX_DEVICERCTLKEYMASK),
-    );
+    pressed_mods.set(ModifiersKeys::LCONTROL, flags.contains(NX_DEVICELCTLKEYMASK));
+    pressed_mods.set(ModifiersKeys::RCONTROL, flags.contains(NX_DEVICERCTLKEYMASK));
 
-    state.set(
-        ModifiersState::ALT,
-        flags.contains(NSEventModifierFlags::NSEventModifierFlagOption),
-    );
+    state.set(ModifiersState::ALT, flags.contains(NSEventModifierFlags::NSEventModifierFlagOption));
     pressed_mods.set(ModifiersKeys::LALT, flags.contains(NX_DEVICELALTKEYMASK));
     pressed_mods.set(ModifiersKeys::RALT, flags.contains(NX_DEVICERALTKEYMASK));
 
@@ -360,10 +356,7 @@ pub(super) fn event_mods(event: &NSEvent) -> Modifiers {
     pressed_mods.set(ModifiersKeys::LSUPER, flags.contains(NX_DEVICELCMDKEYMASK));
     pressed_mods.set(ModifiersKeys::RSUPER, flags.contains(NX_DEVICERCMDKEYMASK));
 
-    Modifiers {
-        state,
-        pressed_mods,
-    }
+    Modifiers { state, pressed_mods }
 }
 
 pub(super) fn dummy_event() -> Option<Retained<NSEvent>> {

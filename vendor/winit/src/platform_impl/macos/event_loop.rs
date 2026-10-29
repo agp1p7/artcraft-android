@@ -75,10 +75,7 @@ impl ActiveEventLoop {
     pub(super) fn new_root(delegate: Retained<ApplicationDelegate>) -> RootWindowTarget {
         let mtm = MainThreadMarker::from(&*delegate);
         let p = Self { delegate, mtm };
-        RootWindowTarget {
-            p,
-            _marker: PhantomData,
-        }
+        RootWindowTarget { p, _marker: PhantomData }
     }
 
     pub(super) fn app_delegate(&self) -> &ApplicationDelegate {
@@ -86,9 +83,7 @@ impl ActiveEventLoop {
     }
 
     pub fn create_custom_cursor(&self, source: CustomCursorSource) -> RootCustomCursor {
-        RootCustomCursor {
-            inner: CustomCursor::new(source.inner),
-        }
+        RootCustomCursor { inner: CustomCursor::new(source.inner) }
     }
 
     #[inline]
@@ -116,9 +111,7 @@ impl ActiveEventLoop {
         let app = NSApplication::sharedApplication(self.mtm);
 
         if app.respondsToSelector(sel!(effectiveAppearance)) {
-            Some(super::window_delegate::appearance_to_theme(
-                &app.effectiveAppearance(),
-            ))
+            Some(super::window_delegate::appearance_to_theme(&app.effectiveAppearance()))
         } else {
             Some(Theme::Light)
         }
@@ -129,9 +122,7 @@ impl ActiveEventLoop {
     pub fn raw_display_handle_rwh_06(
         &self,
     ) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
-        Ok(rwh_06::RawDisplayHandle::AppKit(
-            rwh_06::AppKitDisplayHandle::new(),
-        ))
+        Ok(rwh_06::RawDisplayHandle::AppKit(rwh_06::AppKitDisplayHandle::new()))
     }
 
     pub(crate) fn set_control_flow(&self, control_flow: ControlFlow) {
@@ -185,7 +176,7 @@ fn map_user_event<T: 'static>(
             for event in receiver.try_iter() {
                 (handler)(Event::UserEvent(event), window_target);
             }
-        }
+        },
     }
 }
 
@@ -214,6 +205,7 @@ pub(crate) struct PlatformSpecificEventLoopAttributes {
     pub(crate) activation_policy: Option<ActivationPolicy>,
     pub(crate) default_menu: bool,
     pub(crate) activate_ignoring_other_apps: bool,
+    pub(crate) close_requested_on_terminate: bool,
 }
 
 impl Default for PlatformSpecificEventLoopAttributes {
@@ -222,6 +214,7 @@ impl Default for PlatformSpecificEventLoopAttributes {
             activation_policy: None,
             default_menu: true,
             activate_ignoring_other_apps: true,
+            close_requested_on_terminate: false,
         }
     }
 }
@@ -247,6 +240,7 @@ impl<T> EventLoop<T> {
             activation_policy,
             attributes.default_menu,
             attributes.activate_ignoring_other_apps,
+            attributes.close_requested_on_terminate,
         );
 
         autoreleasepool(|_| {
@@ -360,18 +354,18 @@ impl<T> EventLoop<T> {
                         Some(Duration::ZERO) => {
                             self.delegate.set_wait_timeout(None);
                             self.delegate.set_stop_before_wait(true);
-                        }
+                        },
                         Some(duration) => {
                             self.delegate.set_stop_before_wait(false);
                             let timeout = Instant::now() + duration;
                             self.delegate.set_wait_timeout(Some(timeout));
                             self.delegate.set_stop_after_wait(true);
-                        }
+                        },
                         None => {
                             self.delegate.set_wait_timeout(None);
                             self.delegate.set_stop_before_wait(false);
                             self.delegate.set_stop_after_wait(true);
-                        }
+                        },
                     }
                     self.delegate.set_stop_on_redraw(true);
                     // SAFETY: We do not run the application re-entrantly
@@ -468,7 +462,7 @@ pub fn stop_app_on_panic<F: FnOnce() -> R + UnwindSafe, R>(
             let app = NSApplication::sharedApplication(mtm);
             stop_app_immediately(&app);
             None
-        }
+        },
     }
 }
 
@@ -524,9 +518,7 @@ impl<T> EventLoopProxy<T> {
     }
 
     pub fn send_event(&self, event: T) -> Result<(), EventLoopClosed<T>> {
-        self.sender
-            .send(event)
-            .map_err(|mpsc::SendError(x)| EventLoopClosed(x))?;
+        self.sender.send(event).map_err(|mpsc::SendError(x)| EventLoopClosed(x))?;
         unsafe {
             // let the main thread know there's a new event
             CFRunLoopSourceSignal(self.source);

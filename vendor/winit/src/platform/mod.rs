@@ -51,11 +51,8 @@ pub mod pump_events;
 ))]
 pub mod modifier_supplement;
 
-#[cfg(any(
-    windows_platform,
-    macos_platform,
-    x11_platform,
-    wayland_platform,
-    docsrs
-))]
+#[cfg(any(x11_platform, wayland_platform, docsrs))]
+pub mod latin_layout;
+
+#[cfg(any(windows_platform, macos_platform, x11_platform, wayland_platform, docsrs))]
 pub mod scancode;

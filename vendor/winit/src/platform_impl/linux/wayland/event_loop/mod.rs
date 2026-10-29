@@ -23,7 +23,7 @@ use tracing::warn;
 use crate::cursor::OnlyCursorImage;
 use crate::dpi::LogicalSize;
 use crate::error::{EventLoopError, OsError as RootOsError};
-use crate::event::{Event, InnerSizeWriter, StartCause, WindowEvent};
+use crate::event::{Event, Ime, InnerSizeWriter, StartCause, WindowEvent};
 use crate::event_loop::{ActiveEventLoop as RootActiveEventLoop, ControlFlow, DeviceEvents};
 use crate::platform::pump_events::PumpStatus;
 use crate::platform_impl::platform::min_timeout;
@@ -38,6 +38,7 @@ pub mod sink;
 pub use proxy::EventLoopProxy;
 use sink::EventSink;
 
+use super::seat::clear_ime_batch_for_window;
 use super::state::{WindowCompositorUpdate, WinitState};
 use super::window::state::FrameCallbackState;
 use super::{logical_to_physical_rounded, DeviceId, WaylandError, WindowId};
@@ -88,26 +89,20 @@ impl<T: 'static> EventLoop<T> {
 
         let connection = map_err!(Connection::connect_to_env(), WaylandError::Connection)?;
 
-        let (globals, mut event_queue) = map_err!(
-            globals::registry_queue_init(&connection),
-            WaylandError::Global
-        )?;
+        let (globals, mut event_queue) =
+            map_err!(globals::registry_queue_init(&connection), WaylandError::Global)?;
         let queue_handle = event_queue.handle();
 
-        let event_loop = map_err!(
-            calloop::EventLoop::<WinitState>::try_new(),
-            WaylandError::Calloop
-        )?;
+        let event_loop =
+            map_err!(calloop::EventLoop::<WinitState>::try_new(), WaylandError::Calloop)?;
 
-        let mut winit_state = WinitState::new(&globals, &queue_handle, event_loop.handle())
-            .map_err(|error| os_error!(error))?;
+        let mut winit_state =
+            WinitState::new(&connection, &globals, &queue_handle, event_loop.handle())
+                .map_err(|error| os_error!(error))?;
 
         // NOTE: do a roundtrip after binding the globals to prevent potential
         // races with the server.
-        map_err!(
-            event_queue.roundtrip(&mut winit_state),
-            WaylandError::Dispatch
-        )?;
+        map_err!(event_queue.roundtrip(&mut winit_state), WaylandError::Dispatch)?;
 
         // Register Wayland source.
         let wayland_source = WaylandSource::new(connection.clone(), event_queue);
@@ -124,9 +119,7 @@ impl<T: 'static> EventLoop<T> {
             });
 
         map_err!(
-            event_loop
-                .handle()
-                .register_dispatcher(wayland_dispatcher.clone()),
+            event_loop.handle().register_dispatcher(wayland_dispatcher.clone()),
             WaylandError::Calloop
         )?;
 
@@ -136,15 +129,12 @@ impl<T: 'static> EventLoop<T> {
         let (user_events_sender, user_events_channel) = calloop::channel::channel();
         let result = event_loop
             .handle()
-            .insert_source(
-                user_events_channel,
-                move |event, _, winit_state: &mut WinitState| {
-                    if let calloop::channel::Event::Msg(msg) = event {
-                        winit_state.dispatched_events = true;
-                        pending_user_events_clone.borrow_mut().push(msg);
-                    }
-                },
-            )
+            .insert_source(user_events_channel, move |event, _, winit_state: &mut WinitState| {
+                if let calloop::channel::Event::Msg(msg) = event {
+                    winit_state.dispatched_events = true;
+                    pending_user_events_clone.borrow_mut().push(msg);
+                }
+            })
             .map_err(|error| error.error);
         map_err!(result, WaylandError::Calloop)?;
 
@@ -157,13 +147,10 @@ impl<T: 'static> EventLoop<T> {
 
         let result = event_loop
             .handle()
-            .insert_source(
-                event_loop_awakener_source,
-                move |_, _, winit_state: &mut WinitState| {
-                    // Mark that we have something to dispatch.
-                    winit_state.dispatched_events = true;
-                },
-            )
+            .insert_source(event_loop_awakener_source, move |_, _, winit_state: &mut WinitState| {
+                // Mark that we have something to dispatch.
+                winit_state.dispatched_events = true;
+            })
             .map_err(|error| error.error);
         map_err!(result, WaylandError::Calloop)?;
 
@@ -205,13 +192,13 @@ impl<T: 'static> EventLoop<T> {
             match self.pump_events(None, &mut event_handler) {
                 PumpStatus::Exit(0) => {
                     break Ok(());
-                }
+                },
                 PumpStatus::Exit(code) => {
                     break Err(EventLoopError::ExitFailure(code));
-                }
+                },
                 _ => {
                     continue;
-                }
+                },
             }
         };
 
@@ -253,7 +240,7 @@ impl<T: 'static> EventLoop<T> {
                 let awakener = match &self.window_target.p {
                     PlatformActiveEventLoop::Wayland(window_target) => {
                         window_target.event_loop_awakener.clone()
-                    }
+                    },
                     #[cfg(x11_platform)]
                     PlatformActiveEventLoop::X(_) => unreachable!(),
                 };
@@ -285,7 +272,7 @@ impl<T: 'static> EventLoop<T> {
                     ControlFlow::Poll => Some(Duration::ZERO),
                     ControlFlow::WaitUntil(wait_deadline) => {
                         Some(wait_deadline.saturating_duration_since(start))
-                    }
+                    },
                 };
                 min_timeout(control_flow_timeout, timeout)
             };
@@ -318,23 +305,14 @@ impl<T: 'static> EventLoop<T> {
             // to be considered here
             let cause = match self.control_flow() {
                 ControlFlow::Poll => StartCause::Poll,
-                ControlFlow::Wait => StartCause::WaitCancelled {
-                    start,
-                    requested_resume: None,
-                },
+                ControlFlow::Wait => StartCause::WaitCancelled { start, requested_resume: None },
                 ControlFlow::WaitUntil(deadline) => {
                     if Instant::now() < deadline {
-                        StartCause::WaitCancelled {
-                            start,
-                            requested_resume: Some(deadline),
-                        }
+                        StartCause::WaitCancelled { start, requested_resume: Some(deadline) }
                     } else {
-                        StartCause::ResumeTimeReached {
-                            start,
-                            requested_resume: deadline,
-                        }
+                        StartCause::ResumeTimeReached { start, requested_resume: deadline }
                     }
-                }
+                },
             };
 
             // Reduce spurious wake-ups.
@@ -472,23 +450,56 @@ impl<T: 'static> EventLoop<T> {
             }
         }
 
-        // Push the events directly from the window.
+        // Merge the synthetic events pushed by the window and the compositor events into the
+        // process-wide push order before delivering either. The two sinks are needed because the
+        // window side cannot borrow `WinitState`, but delivering all synthetic events first made
+        // a `Disabled` overtake a `Commit` the compositor had already accepted. The merge takes
+        // only the window sink's mutex, releases it and the state borrow before callbacks run.
         self.with_state(|state| {
-            buffer_sink.append(&mut state.window_events_sink.lock().unwrap());
+            let mut window_events = state.window_events_sink.lock().unwrap();
+            buffer_sink.append_ordered(&mut window_events);
+            buffer_sink.append_ordered(&mut state.events_sink);
         });
-        for event in buffer_sink.drain() {
-            let event = event.map_nonuser_event().unwrap();
-            callback(event, &self.window_target);
-        }
-
-        // Handle non-synthetic events.
-        self.with_state(|state| {
-            buffer_sink.append(&mut state.events_sink);
+        // Check the window's closed tombstone immediately before delivery. Window destruction is
+        // asynchronous with dispatch, so checking only after the queue was drained delivered IME
+        // events for a window the application had already dropped. This also covers accepted
+        // commits whose seat was destroyed (their lifecycle token survives in the queued event)
+        // and untagged synthetic `Enabled`/clear events.
+        let deliverable = buffer_sink.drain_deliverable_for(|window_id| {
+            self.with_state(|state| {
+                state
+                    .window_requests
+                    .get_mut()
+                    .get(&window_id)
+                    .map_or(true, |requests| requests.is_closed())
+            })
         });
-        for event in buffer_sink.drain() {
-            let event = event.map_nonuser_event().unwrap();
-            callback(event, &self.window_target);
-        }
+        dispatch_ime_events(
+            deliverable,
+            self,
+            |this, window_id| {
+                this.with_state(|state| {
+                    state
+                        .window_requests
+                        .get_mut()
+                        .get(&window_id)
+                        .map_or(true, |requests| requests.is_closed())
+                })
+            },
+            |this, event, delete| {
+                // Attach deletion only to the actual commit callback.
+                if let Event::WindowEvent { window_id, event: WindowEvent::Ime(Ime::Commit(_)) } =
+                    &event
+                {
+                    this.with_state(|state| {
+                        if let Some(window) = state.windows.get_mut().get(&window_id.0) {
+                            window.lock().unwrap().ime_delete_surrounding = delete;
+                        }
+                    });
+                }
+                callback(event, &this.window_target);
+            },
+        );
 
         // Collect the window ids
         self.with_state(|state| {
@@ -501,16 +512,13 @@ impl<T: 'static> EventLoop<T> {
                 if window_requests.get(window_id).unwrap().take_closed() {
                     mem::drop(window_requests.remove(window_id));
                     mem::drop(state.windows.get_mut().remove(window_id));
+                    clear_ime_batch_for_window(&state.seats, *window_id);
+                    state.clipboard.remove_window(crate::window::WindowId(*window_id));
                     return Some(WindowEvent::Destroyed);
                 }
 
-                let mut window = state
-                    .windows
-                    .get_mut()
-                    .get_mut(window_id)
-                    .unwrap()
-                    .lock()
-                    .unwrap();
+                let mut window =
+                    state.windows.get_mut().get_mut(window_id).unwrap().lock().unwrap();
 
                 if window.frame_callback_state() == FrameCallbackState::Requested {
                     return None;
@@ -518,10 +526,8 @@ impl<T: 'static> EventLoop<T> {
 
                 // Reset the frame callbacks state.
                 window.frame_callback_reset();
-                let mut redraw_requested = window_requests
-                    .get(window_id)
-                    .unwrap()
-                    .take_redraw_requested();
+                let mut redraw_requested =
+                    window_requests.get(window_id).unwrap().take_redraw_requested();
 
                 // Redraw the frame while at it.
                 redraw_requested |= window.refresh_frame();
@@ -531,14 +537,15 @@ impl<T: 'static> EventLoop<T> {
 
             if let Some(event) = event {
                 callback(
-                    Event::WindowEvent {
-                        window_id: crate::window::WindowId(*window_id),
-                        event,
-                    },
+                    Event::WindowEvent { window_id: crate::window::WindowId(*window_id), event },
                     &self.window_target,
                 );
             }
         }
+
+        // SCTK does not report `wl_data_device.selection(NULL)`, so reconcile the protocol
+        // objects once per turn to notice a regular selection clear and cancel stale reads.
+        self.with_state(|state| state.clipboard.reconcile_selections());
 
         // Reset the hint that we've dispatched events.
         self.with_state(|state| {
@@ -565,7 +572,7 @@ impl<T: 'static> EventLoop<T> {
                     }
 
                     refresh
-                }
+                },
                 None => false,
             });
         }
@@ -578,7 +585,7 @@ impl<T: 'static> EventLoop<T> {
             match &self.window_target.p {
                 PlatformActiveEventLoop::Wayland(window_target) => {
                     window_target.event_loop_awakener.ping();
-                }
+                },
                 #[cfg(x11_platform)]
                 PlatformActiveEventLoop::X(_) => unreachable!(),
             }
@@ -632,9 +639,7 @@ impl<T: 'static> EventLoop<T> {
         let mut wayland_source = self.wayland_dispatcher.as_source_mut();
         let event_queue = wayland_source.queue();
         event_queue.roundtrip(state).map_err(|error| {
-            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(
-                error
-            ))))
+            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(error))))
         })
     }
 
@@ -787,18 +792,11 @@ impl PumpEventNotifier {
 
         let (read, write) = match pipe::pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK) {
             Ok((read, write)) => (read, write),
-            Err(_) => {
-                return Self {
-                    control,
-                    handle: None,
-                    worker_waker: None,
-                }
-            }
+            Err(_) => return Self { control, handle: None, worker_waker: None },
         };
 
-        let handle = std::thread::Builder::new()
-            .name(String::from("pump_events mon"))
-            .spawn(move || {
+        let handle =
+            std::thread::Builder::new().name(String::from("pump_events mon")).spawn(move || {
                 let (lock, cvar) = &*control_thread;
                 'outer: loop {
                     let mut wait = lock.lock().unwrap();
@@ -838,11 +836,7 @@ impl PumpEventNotifier {
             warn!("failed to spawn pump_events wake-up thread: {err}");
         }
 
-        PumpEventNotifier {
-            control,
-            handle: handle.ok(),
-            worker_waker: Some(write),
-        }
+        PumpEventNotifier { control, handle: handle.ok(), worker_waker: Some(write) }
     }
 }
 
@@ -854,4 +848,57 @@ enum PumpEventNotifierAction {
     Pause,
     /// Shutdown the thread.
     Shutdown,
+}
+
+/// The final callback boundary, after sinks have already been drained into a local vector.
+fn dispatch_ime_events<T: 'static, C>(
+    deliverable: Vec<(Event<()>, Option<crate::platform::wayland::ImeDeleteSurrounding>)>,
+    context: &mut C,
+    mut is_closed: impl FnMut(&mut C, WindowId) -> bool,
+    mut callback: impl FnMut(&mut C, Event<T>, Option<crate::platform::wayland::ImeDeleteSurrounding>),
+) {
+    for (event, delete) in deliverable {
+        let event = event.map_nonuser_event().unwrap();
+        let ime_window = sink::ime_event_window(&event);
+        if ime_window.is_some_and(|window| is_closed(context, window)) {
+            continue;
+        }
+        callback(context, event, delete);
+    }
+}
+
+#[cfg(test)]
+mod ime_callback_boundary_tests {
+    use std::cell::Cell;
+
+    use super::{dispatch_ime_events, EventSink, WindowId};
+    use crate::event::{Event, Ime, WindowEvent};
+
+    #[test]
+    fn close_from_preceding_callback_suppresses_already_drained_completion() {
+        let first = WindowId::from(1);
+        let closing = WindowId::from(2);
+        let mut sink = EventSink::new();
+        sink.push_window_event(WindowEvent::Focused(true), first);
+        sink.push_window_event(WindowEvent::ImeResetCompleted { request_id: 7 }, closing);
+        sink.push_window_event(WindowEvent::Ime(Ime::Commit("old".into())), closing);
+        let drained = sink.drain_deliverable();
+        let closed = Cell::new(false);
+        let mut delivered = Vec::new();
+        dispatch_ime_events::<(), _>(
+            drained,
+            &mut (),
+            |_, window| window == closing && closed.get(),
+            |_, event, _| {
+                if matches!(event, Event::WindowEvent { window_id, .. } if window_id.0 == first) {
+                    closed.set(true);
+                }
+                delivered.push(event);
+            },
+        );
+        assert_eq!(delivered, vec![Event::WindowEvent {
+            window_id: crate::window::WindowId(first),
+            event: WindowEvent::Focused(true),
+        }]);
+    }
 }

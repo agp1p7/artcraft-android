@@ -57,6 +57,7 @@ pub(crate) enum RunnerState {
 
 enum BufferedEvent<T: 'static> {
     Event(Event<T>),
+    ImeResetCompletion(Event<T>, Box<dyn FnOnce() -> bool>),
     ScaleFactorChanged(WindowId, f64, PhysicalSize<u32>),
 }
 
@@ -181,12 +182,12 @@ impl<T> EventLoopRunner<T> {
                     Err(e) => {
                         self.panic_error.set(Some(e));
                         None
-                    }
+                    },
                 },
                 Some(e) => {
                     self.panic_error.set(Some(e));
                     None
-                }
+                },
             }
         } else {
             self.panic_error.set(panic_error);
@@ -206,11 +207,7 @@ impl<T> EventLoopRunner<T> {
     }
 
     pub(crate) fn send_event(&self, event: Event<T>) {
-        if let Event::WindowEvent {
-            event: WindowEvent::RedrawRequested,
-            ..
-        } = event
-        {
+        if let Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } = event {
             self.call_event_handler(event);
             // As a rule, to ensure that `pump_events` can't block an external event loop
             // for too long, we always guarantee that `pump_events` will return control to
@@ -219,11 +216,33 @@ impl<T> EventLoopRunner<T> {
         } else if self.should_buffer() {
             // If the runner is already borrowed, we're in the middle of an event loop invocation.
             // Add the event to a buffer to be processed later.
-            self.event_buffer
-                .borrow_mut()
-                .push_back(BufferedEvent::from_event(event))
+            self.event_buffer.borrow_mut().push_back(BufferedEvent::from_event(event))
         } else {
             self.call_event_handler(event);
+            self.dispatch_buffered_events();
+        }
+    }
+
+    /// Publish the input events accepted by one native IME message.
+    pub(crate) fn publish_ime_batch(&self, events: impl IntoIterator<Item = Event<T>>) {
+        // Accept the whole native message before exposing its first callback. A reset from
+        // that callback must follow a result already copied by this message, including its
+        // optional next preedit or END notification.
+        self.event_buffer.borrow_mut().extend(events.into_iter().map(BufferedEvent::from_event));
+        if !self.should_buffer() {
+            self.dispatch_buffered_events();
+        }
+    }
+
+    pub(crate) fn send_ime_reset_completion(
+        &self,
+        event: Event<T>,
+        valid: impl FnOnce() -> bool + 'static,
+    ) {
+        self.event_buffer
+            .borrow_mut()
+            .push_back(BufferedEvent::ImeResetCompletion(event, Box::new(valid)));
+        if !self.should_buffer() {
             self.dispatch_buffered_events();
         }
     }
@@ -286,10 +305,7 @@ impl<T> EventLoopRunner<T> {
     fn move_state_to(&self, new_runner_state: RunnerState) {
         use RunnerState::{Destroyed, HandlingMainEvents, Idle, Uninitialized};
 
-        match (
-            self.runner_state.replace(new_runner_state),
-            new_runner_state,
-        ) {
+        match (self.runner_state.replace(new_runner_state), new_runner_state) {
             (Uninitialized, Uninitialized)
             | (Idle, Idle)
             | (HandlingMainEvents, HandlingMainEvents)
@@ -298,38 +314,38 @@ impl<T> EventLoopRunner<T> {
             // State transitions that initialize the event loop.
             (Uninitialized, HandlingMainEvents) => {
                 self.call_new_events(true);
-            }
+            },
             (Uninitialized, Idle) => {
                 self.call_new_events(true);
                 self.call_event_handler(Event::AboutToWait);
                 self.last_events_cleared.set(Instant::now());
-            }
+            },
             (Uninitialized, Destroyed) => {
                 self.call_new_events(true);
                 self.call_event_handler(Event::AboutToWait);
                 self.last_events_cleared.set(Instant::now());
                 self.call_event_handler(Event::LoopExiting);
-            }
+            },
             (_, Uninitialized) => panic!("cannot move state to Uninitialized"),
 
             // State transitions that start the event handling process.
             (Idle, HandlingMainEvents) => {
                 self.call_new_events(false);
-            }
+            },
             (Idle, Destroyed) => {
                 self.call_event_handler(Event::LoopExiting);
-            }
+            },
 
             (HandlingMainEvents, Idle) => {
                 // This is always the last event we dispatch before waiting for new events
                 self.call_event_handler(Event::AboutToWait);
                 self.last_events_cleared.set(Instant::now());
-            }
+            },
             (HandlingMainEvents, Destroyed) => {
                 self.call_event_handler(Event::AboutToWait);
                 self.last_events_cleared.set(Instant::now());
                 self.call_event_handler(Event::LoopExiting);
-            }
+            },
 
             (Destroyed, _) => panic!("cannot move state from Destroyed"),
         }
@@ -355,7 +371,7 @@ impl<T> EventLoopRunner<T> {
                         start: self.last_events_cleared.get(),
                     }
                 }
-            }
+            },
         };
         self.call_event_handler(Event::NewEvents(start_cause));
         // NB: For consistency all platforms must emit a 'resumed' event even though Windows
@@ -371,21 +387,12 @@ impl<T> BufferedEvent<T> {
     pub fn from_event(event: Event<T>) -> BufferedEvent<T> {
         match event {
             Event::WindowEvent {
-                event:
-                    WindowEvent::ScaleFactorChanged {
-                        scale_factor,
-                        inner_size_writer,
-                    },
+                event: WindowEvent::ScaleFactorChanged { scale_factor, inner_size_writer },
                 window_id,
             } => BufferedEvent::ScaleFactorChanged(
                 window_id,
                 scale_factor,
-                *inner_size_writer
-                    .new_inner_size
-                    .upgrade()
-                    .unwrap()
-                    .lock()
-                    .unwrap(),
+                *inner_size_writer.new_inner_size.upgrade().unwrap().lock().unwrap(),
             ),
             event => BufferedEvent::Event(event),
         }
@@ -394,6 +401,11 @@ impl<T> BufferedEvent<T> {
     pub fn dispatch_event(self, dispatch: impl FnOnce(Event<T>)) {
         match self {
             Self::Event(event) => dispatch(event),
+            Self::ImeResetCompletion(event, valid) => {
+                if valid() {
+                    dispatch(event);
+                }
+            },
             Self::ScaleFactorChanged(window_id, scale_factor, new_inner_size) => {
                 let user_new_inner_size = Arc::new(Mutex::new(new_inner_size));
                 dispatch(Event::WindowEvent {
@@ -418,7 +430,187 @@ impl<T> BufferedEvent<T> {
 
                     window_flags.set_size((window_id.0).0, inner_size);
                 }
-            }
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod ime_reset_queue_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::EventLoopRunner;
+    use crate::event::{Event, Ime, WindowEvent};
+
+    #[test]
+    fn reentrant_input_and_reset_fence_keep_fifo_order() {
+        let runner = Rc::new(EventLoopRunner::new(0));
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&output);
+        let nested = Rc::clone(&runner);
+        let window_id = crate::window::WindowId::dummy();
+        // The handler owns everything it captures and is cleared before runner teardown.
+        unsafe {
+            runner.set_event_handler(move |event: Event<()>| {
+                if matches!(event, Event::UserEvent(())) {
+                    for event in [
+                        WindowEvent::Ime(Ime::Commit("accepted old".into())),
+                        WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+                        WindowEvent::ImeResetCompleted { request_id: u64::MAX },
+                        WindowEvent::Ime(Ime::Preedit("new".into(), Some((3, 3)))),
+                    ] {
+                        nested.send_event(Event::WindowEvent { window_id, event });
+                    }
+                    assert!(observed.borrow().is_empty(), "reset callback reentered app code");
+                } else if let Event::WindowEvent { event, .. } = event {
+                    observed.borrow_mut().push(event);
+                }
+            });
+        }
+        runner.send_event(Event::UserEvent(()));
+        runner.clear_event_handler();
+        assert!(runner.take_panic_error().is_ok());
+        assert_eq!(*output.borrow(), vec![
+            WindowEvent::Ime(Ime::Commit("accepted old".into())),
+            WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+            WindowEvent::ImeResetCompleted { request_id: u64::MAX },
+            WindowEvent::Ime(Ime::Preedit("new".into(), Some((3, 3)))),
+        ]);
+    }
+}
+
+#[cfg(test)]
+mod ime_native_batch_boundary_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::EventLoopRunner;
+    use crate::event::{Event, Ime, WindowEvent};
+
+    #[test]
+    fn reset_from_native_clear_callback_cannot_overtake_copied_result_or_next_preedit() {
+        for suffix in
+            [None, Some(Ime::Preedit("old next".into(), Some((8, 8)))), Some(Ime::Disabled)]
+        {
+            let runner = Rc::new(EventLoopRunner::new(0));
+            let output = Rc::new(RefCell::new(Vec::new()));
+            let nested = Rc::clone(&runner);
+            let observed = Rc::clone(&output);
+            let window_id = crate::window::WindowId::dummy();
+            let mut requested = false;
+            unsafe {
+                runner.set_event_handler(move |event: Event<()>| {
+                    if let Event::WindowEvent { event, .. } = event {
+                        let clear = matches!(&event, WindowEvent::Ime(Ime::Preedit(text, _)) if text.is_empty());
+                        observed.borrow_mut().push(event);
+                        if clear && !requested {
+                            requested = true;
+                            // This is where the real reset-message handler queues completion
+                            // when invoked synchronously from this callback.
+                            nested.send_event(Event::WindowEvent {
+                                window_id, event: WindowEvent::ImeResetCompleted { request_id: 7 },
+                            });
+                        }
+                    }
+                });
+            }
+            let mut native = vec![
+                WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+                WindowEvent::Ime(Ime::Commit("already copied old result".into())),
+            ];
+            if let Some(suffix) = suffix {
+                native.push(WindowEvent::Ime(suffix));
+            }
+            // Both WM_IME_COMPOSITION and END use this production publication boundary.
+            runner.publish_ime_batch(
+                native.iter().cloned().map(|event| Event::WindowEvent { window_id, event }),
+            );
+            runner.clear_event_handler();
+            assert!(runner.take_panic_error().is_ok());
+            native.push(WindowEvent::ImeResetCompleted { request_id: 7 });
+            assert_eq!(*output.borrow(), native);
+        }
+    }
+}
+
+#[cfg(test)]
+mod ime_completion_cleanup_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::EventLoopRunner;
+    use crate::event::{Event, Ime, WindowEvent};
+
+    #[test]
+    fn closing_from_clear_callback_filters_completion_but_keeps_accepted_result() {
+        let runner = Rc::new(EventLoopRunner::new(0));
+        let alive = Arc::new(AtomicBool::new(true));
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&output);
+        let nested = Rc::clone(&runner);
+        let closing = Arc::clone(&alive);
+        let window_id = crate::window::WindowId::dummy();
+        unsafe {
+            runner.set_event_handler(move |event: Event<()>| {
+                if let Event::WindowEvent { event, .. } = event {
+                    let clear = matches!(&event, WindowEvent::Ime(Ime::Preedit(text, _)) if text.is_empty());
+                    observed.borrow_mut().push(event);
+                    if clear {
+                        let valid = Arc::clone(&closing);
+                        nested.send_ime_reset_completion(
+                            Event::WindowEvent { window_id, event: WindowEvent::ImeResetCompleted { request_id: 7 } },
+                            move || valid.load(Ordering::Acquire),
+                        );
+                        closing.store(false, Ordering::Release);
+                    }
+                }
+            });
+        }
+        runner.publish_ime_batch([
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+            },
+            Event::WindowEvent { window_id, event: WindowEvent::Ime(Ime::Commit("copied".into())) },
+        ]);
+        runner.clear_event_handler();
+        assert!(runner.take_panic_error().is_ok());
+        assert_eq!(*output.borrow(), vec![
+            WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+            WindowEvent::Ime(Ime::Commit("copied".into())),
+        ]);
+        assert!(runner.event_buffer.borrow().is_empty());
+    }
+
+    #[test]
+    fn panic_in_first_callback_does_not_leave_a_stuck_batch_or_run_completion() {
+        let runner = Rc::new(EventLoopRunner::new(0));
+        let nested = Rc::clone(&runner);
+        let window_id = crate::window::WindowId::dummy();
+        unsafe {
+            runner.set_event_handler(move |_: Event<()>| {
+                nested.send_ime_reset_completion(
+                    Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::ImeResetCompleted { request_id: 7 },
+                    },
+                    || true,
+                );
+                panic!("app callback failed");
+            });
+        }
+        runner.publish_ime_batch([
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+            },
+            Event::WindowEvent { window_id, event: WindowEvent::Ime(Ime::Commit("copied".into())) },
+        ]);
+        runner.clear_event_handler();
+        assert!(runner.take_panic_error().is_err());
+        assert!(runner.event_buffer.borrow().is_empty());
     }
 }

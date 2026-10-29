@@ -25,10 +25,7 @@ type XIMProcNonnull = unsafe extern "C" fn(ffi::XIM, ffi::XPointer, ffi::XPointe
 /// Wrapper for creating XIM callbacks.
 #[inline]
 fn create_xim_callback(client_data: ffi::XPointer, callback: XIMProcNonnull) -> ffi::XIMCallback {
-    XIMCallback {
-        client_data,
-        callback: Some(callback),
-    }
+    XIMCallback { client_data, callback: Some(callback) }
 }
 
 /// The server started preedit.
@@ -67,9 +64,7 @@ extern "C" fn preedit_done_callback(
 }
 
 fn calc_byte_position(text: &[char], pos: usize) -> usize {
-    text.iter()
-        .take(pos)
-        .fold(0, |byte_pos, text| byte_pos + text.len_utf8())
+    text.iter().take(pos).fold(0, |byte_pos, text| byte_pos + text.len_utf8())
 }
 
 /// Preedit text information to be drawn inline by the client.
@@ -111,9 +106,7 @@ extern "C" fn preedit_draw_callback(
 
         let new_text = unsafe { CStr::from_ptr(new_text) };
 
-        String::from(new_text.to_str().expect("Invalid UTF-8 String from IME"))
-            .chars()
-            .collect()
+        String::from(new_text.to_str().expect("Invalid UTF-8 String from IME")).chars().collect()
     };
     let mut old_text_tail = client_data.text.split_off(chg_range.end);
     client_data.text.truncate(chg_range.start);
@@ -172,12 +165,7 @@ impl PreeditCallbacks {
         let caret_callback = create_xim_callback(client_data, preedit_caret_callback);
         let draw_callback = create_xim_callback(client_data, preedit_draw_callback);
 
-        PreeditCallbacks {
-            start_callback,
-            done_callback,
-            caret_callback,
-            draw_callback,
-        }
+        PreeditCallbacks { start_callback, done_callback, caret_callback, draw_callback }
     }
 }
 
@@ -217,13 +205,10 @@ impl ImeContext {
             cursor_pos: 0,
         }));
 
-        let style = if allowed {
-            im.preedit_style
-        } else {
-            im.none_style
-        };
-
-        let ic = match style as _ {
+        // The context keeps the preedit style while IME is disallowed. Input methods keep their
+        // per-context state (such as whether Vietnamese Telex is on) only while the context lives,
+        // so disallowing IME stops filtering keys and unfocuses the context instead.
+        let ic = match im.preedit_style as _ {
             Style::Preedit(style) => unsafe {
                 ImeContext::create_preedit_ic(
                     xconn,
@@ -242,9 +227,7 @@ impl ImeContext {
         }
         .ok_or(ImeContextCreationError::Null)?;
 
-        xconn
-            .check_errors()
-            .map_err(ImeContextCreationError::XError)?;
+        xconn.check_errors().map_err(ImeContextCreationError::XError)?;
 
         let mut context = ImeContext {
             ic,
@@ -355,8 +338,26 @@ impl ImeContext {
         xconn.check_errors()
     }
 
+    /// Discards the composition: the input method drops its preedit and starts over.
+    pub(crate) fn reset(&mut self, xconn: &Arc<XConnection>) -> Result<(), XError> {
+        unsafe {
+            // Returns the discarded preedit text, which has to be freed.
+            let text = (xconn.xlib.XmbResetIC)(self.ic);
+            if !text.is_null() {
+                (xconn.xlib.XFree)(text.cast());
+            }
+        }
+        self._client_data.text.clear();
+        self._client_data.cursor_pos = 0;
+        xconn.check_errors()
+    }
+
     pub fn is_allowed(&self) -> bool {
         self.allowed
+    }
+
+    pub(crate) fn set_allowed(&mut self, allowed: bool) {
+        self.allowed = allowed;
     }
 
     // Set the spot for preedit text. Setting spot isn't working with libX11 when preedit callbacks

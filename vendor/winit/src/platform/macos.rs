@@ -87,7 +87,9 @@ use std::os::raw::c_void;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::event::KeyEvent;
 use crate::event_loop::{ActiveEventLoop, EventLoopBuilder};
+use crate::keyboard::Key;
 use crate::monitor::MonitorHandle;
 use crate::window::{Window, WindowAttributes};
 
@@ -170,6 +172,30 @@ pub trait WindowExtMacOS {
 
     /// Getter for the [`WindowExtMacOS::set_borderless_game`].
     fn is_borderless_game(&self) -> bool;
+
+    /// The text to delete before inserting the [`Ime::Commit`] being handled.
+    ///
+    /// Call this when handling each `Ime::Commit`, after removing the preedit and before
+    /// inserting the committed text, which may be empty when an input method only deletes.
+    /// Returns `None` when the commit deletes nothing.
+    ///
+    /// Input methods replace text they inserted next to the cursor: press-and-hold replaces a
+    /// letter with the accented one picked, and dictation corrects the words it inserted.
+    ///
+    /// [`Ime::Commit`]: crate::event::Ime::Commit
+    fn take_ime_delete_surrounding(&self) -> Option<ImeDeleteSurrounding>;
+}
+
+/// Text an input method asks to delete around the cursor, in bytes of UTF-8 text.
+///
+/// The counts exclude the selection and the preedit: `before_bytes` ends where the preedit or
+/// selection starts and `after_bytes` starts where it ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ImeDeleteSurrounding {
+    /// Bytes to delete before the cursor.
+    pub before_bytes: usize,
+    /// Bytes to delete after the cursor.
+    pub after_bytes: usize,
 }
 
 impl WindowExtMacOS for Window {
@@ -180,8 +206,7 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_simple_fullscreen(&self, fullscreen: bool) -> bool {
-        self.window
-            .maybe_wait_on_main(move |w| w.set_simple_fullscreen(fullscreen))
+        self.window.maybe_wait_on_main(move |w| w.set_simple_fullscreen(fullscreen))
     }
 
     #[inline]
@@ -191,14 +216,12 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_has_shadow(&self, has_shadow: bool) {
-        self.window
-            .maybe_queue_on_main(move |w| w.set_has_shadow(has_shadow))
+        self.window.maybe_queue_on_main(move |w| w.set_has_shadow(has_shadow))
     }
 
     #[inline]
     fn set_tabbing_identifier(&self, identifier: &str) {
-        self.window
-            .maybe_wait_on_main(|w| w.set_tabbing_identifier(identifier))
+        self.window.maybe_wait_on_main(|w| w.set_tabbing_identifier(identifier))
     }
 
     #[inline]
@@ -218,8 +241,7 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn select_tab_at_index(&self, index: usize) {
-        self.window
-            .maybe_queue_on_main(move |w| w.select_tab_at_index(index))
+        self.window.maybe_queue_on_main(move |w| w.select_tab_at_index(index))
     }
 
     #[inline]
@@ -234,14 +256,12 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_document_edited(&self, edited: bool) {
-        self.window
-            .maybe_queue_on_main(move |w| w.set_document_edited(edited))
+        self.window.maybe_queue_on_main(move |w| w.set_document_edited(edited))
     }
 
     #[inline]
     fn set_option_as_alt(&self, option_as_alt: OptionAsAlt) {
-        self.window
-            .maybe_queue_on_main(move |w| w.set_option_as_alt(option_as_alt))
+        self.window.maybe_queue_on_main(move |w| w.set_option_as_alt(option_as_alt))
     }
 
     #[inline]
@@ -251,13 +271,17 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_borderless_game(&self, borderless_game: bool) {
-        self.window
-            .maybe_wait_on_main(|w| w.set_borderless_game(borderless_game))
+        self.window.maybe_wait_on_main(|w| w.set_borderless_game(borderless_game))
     }
 
     #[inline]
     fn is_borderless_game(&self) -> bool {
         self.window.maybe_wait_on_main(|w| w.is_borderless_game())
+    }
+
+    #[inline]
+    fn take_ime_delete_surrounding(&self) -> Option<ImeDeleteSurrounding> {
+        self.window.maybe_wait_on_main(|w| w.take_ime_delete_surrounding())
     }
 }
 
@@ -370,9 +394,7 @@ impl WindowAttributesExtMacOS for WindowAttributes {
 
     #[inline]
     fn with_tabbing_identifier(mut self, tabbing_identifier: &str) -> Self {
-        self.platform_specific
-            .tabbing_identifier
-            .replace(tabbing_identifier.to_string());
+        self.platform_specific.tabbing_identifier.replace(tabbing_identifier.to_string());
         self
     }
 
@@ -442,6 +464,21 @@ pub trait EventLoopBuilderExtMacOS {
     ///
     /// The default behavior is to ignore other applications and activate when launched.
     fn with_activate_ignoring_other_apps(&mut self, ignore: bool) -> &mut Self;
+
+    /// Route native application termination (for example, Quit from the Dock) to
+    /// [`WindowEvent::CloseRequested`](crate::event::WindowEvent::CloseRequested) for each
+    /// open Winit window instead of terminating immediately.
+    ///
+    /// Disabled by default. When enabled, Winit cancels the native termination request and
+    /// queues close requests on the ordinary event loop. The application may keep running
+    /// or call [`ActiveEventLoop::exit`](crate::event_loop::ActiveEventLoop::exit) once its
+    /// unsaved-document prompts are complete. Repeated requests are coalesced while a
+    /// queued request is being delivered. Requests with no Winit windows, outside a running
+    /// event loop, or after the event loop has been asked to exit terminate normally.
+    ///
+    /// This also applies to system logout/shutdown requests; applications must finish or
+    /// cancel their own confirmation flow. Force Quit cannot be intercepted.
+    fn with_close_requested_on_terminate(&mut self, enable: bool) -> &mut Self;
 }
 
 impl<T> EventLoopBuilderExtMacOS for EventLoopBuilder<T> {
@@ -460,6 +497,12 @@ impl<T> EventLoopBuilderExtMacOS for EventLoopBuilder<T> {
     #[inline]
     fn with_activate_ignoring_other_apps(&mut self, ignore: bool) -> &mut Self {
         self.platform_specific.activate_ignoring_other_apps = ignore;
+        self
+    }
+
+    #[inline]
+    fn with_close_requested_on_terminate(&mut self, enable: bool) -> &mut Self {
+        self.platform_specific.close_requested_on_terminate = enable;
         self
     }
 }
@@ -481,9 +524,7 @@ impl MonitorHandleExtMacOS for MonitorHandle {
     fn ns_screen(&self) -> Option<*mut c_void> {
         // SAFETY: We only use the marker to get a pointer
         let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
-        self.inner
-            .ns_screen(mtm)
-            .map(|s| objc2::rc::Retained::as_ptr(&s) as _)
+        self.inner.ns_screen(mtm).map(|s| objc2::rc::Retained::as_ptr(&s) as _)
     }
 }
 
@@ -518,6 +559,31 @@ impl ActiveEventLoopExtMacOS for ActiveEventLoop {
 
     fn allows_automatic_window_tabbing(&self) -> bool {
         self.p.allows_automatic_window_tabbing()
+    }
+}
+
+/// Additional methods on [`KeyEvent`] that are specific to macOS.
+pub trait KeyEventExtMacOS {
+    /// The key's character in the keyboard layout's table for <kbd>⌘</kbd>, ignoring all
+    /// modifiers.
+    ///
+    /// Layouts can type other characters while <kbd>⌘</kbd> is held: "Dvorak – QWERTY ⌘" types
+    /// Dvorak letters but QWERTY ones with <kbd>⌘</kbd>, and non-Latin layouts can give Latin
+    /// letters. While <kbd>⌘</kbd> is held, [`KeyEvent::logical_key`] comes from this table
+    /// (heeding <kbd>Shift</kbd>); this reports it for any key event, for matching shortcuts
+    /// without <kbd>⌘</kbd> or showing them.
+    ///
+    /// Like [`key_without_modifiers`], this is never `Dead`. Keys without a character in the
+    /// table report [`key_without_modifiers`].
+    ///
+    /// [`key_without_modifiers`]: crate::platform::modifier_supplement::KeyEventExtModifierSupplement::key_without_modifiers
+    fn key_with_command(&self) -> Key;
+}
+
+impl KeyEventExtMacOS for KeyEvent {
+    #[inline]
+    fn key_with_command(&self) -> Key {
+        self.platform_specific.key_with_command.clone()
     }
 }
 

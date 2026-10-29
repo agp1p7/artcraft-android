@@ -90,15 +90,11 @@ impl Window {
 
         let surface = state.compositor_state.create_surface(&queue_handle);
         let compositor = state.compositor_state.clone();
-        let xdg_activation = state
-            .xdg_activation
-            .as_ref()
-            .map(|activation_state| activation_state.global().clone());
+        let xdg_activation =
+            state.xdg_activation.as_ref().map(|activation_state| activation_state.global().clone());
         let display = event_loop_window_target.connection.display();
 
-        let size: Size = attributes
-            .inner_size
-            .unwrap_or(LogicalSize::new(800., 600.).into());
+        let size: Size = attributes.inner_size.unwrap_or(LogicalSize::new(800., 600.).into());
 
         // We prefer server side decorations, however to not have decorations we ask for client
         // side decorations instead.
@@ -109,9 +105,7 @@ impl Window {
         };
 
         let window =
-            state
-                .xdg_shell
-                .create_window(surface.clone(), default_decorations, &queue_handle);
+            state.xdg_shell.create_window(surface.clone(), default_decorations, &queue_handle);
 
         let mut window_state = WindowState::new(
             event_loop_window_target.connection.clone(),
@@ -152,7 +146,7 @@ impl Window {
         match attributes.fullscreen.map(Into::into) {
             Some(Fullscreen::Exclusive(_)) => {
                 warn!("`Fullscreen::Exclusive` is ignored on Wayland");
-            }
+            },
             #[cfg_attr(not(x11_platform), allow(clippy::bind_instead_of_map))]
             Some(Fullscreen::Borderless(monitor)) => {
                 let output = monitor.and_then(|monitor| match monitor {
@@ -162,7 +156,7 @@ impl Window {
                 });
 
                 window.set_fullscreen(output.as_ref())
-            }
+            },
             _ if attributes.maximized => window.set_maximized(),
             _ => (),
         };
@@ -179,10 +173,9 @@ impl Window {
         }
 
         // Activate the window when the token is passed.
-        if let (Some(xdg_activation), Some(token)) = (
-            xdg_activation.as_ref(),
-            attributes.platform_specific.activation_token,
-        ) {
+        if let (Some(xdg_activation), Some(token)) =
+            (xdg_activation.as_ref(), attributes.platform_specific.activation_token)
+        {
             xdg_activation.activate(token.token, &surface);
         }
 
@@ -192,20 +185,15 @@ impl Window {
         // Add the window and window requests into the state.
         let window_state = Arc::new(Mutex::new(window_state));
         let window_id = super::make_wid(&surface);
-        state
-            .windows
-            .get_mut()
-            .insert(window_id, window_state.clone());
+        state.windows.get_mut().insert(window_id, window_state.clone());
+        state.clipboard.add_window(crate::window::WindowId(window_id));
 
         let window_requests = WindowRequests {
             redraw_requested: AtomicBool::new(true),
             closed: AtomicBool::new(false),
         };
         let window_requests = Arc::new(window_requests);
-        state
-            .window_requests
-            .get_mut()
-            .insert(window_id, window_requests.clone());
+        state.window_requests.get_mut().insert(window_id, window_requests.clone());
 
         // Setup the event sync to insert `WindowEvents` right from the window.
         let window_events_sink = state.window_events_sink.clone();
@@ -215,17 +203,13 @@ impl Window {
 
         // Do a roundtrip.
         event_queue.roundtrip(&mut state).map_err(|error| {
-            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(
-                error
-            ))))
+            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(error))))
         })?;
 
         // XXX Wait for the initial configure to arrive.
         while !window_state.lock().unwrap().is_configured() {
             event_queue.blocking_dispatch(&mut state).map_err(|error| {
-                os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(
-                    error
-                ))))
+                os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(error))))
             })?;
         }
 
@@ -339,10 +323,7 @@ impl Window {
     pub fn set_min_inner_size(&self, min_size: Option<Size>) {
         let scale_factor = self.scale_factor();
         let min_size = min_size.map(|size| size.to_logical(scale_factor));
-        self.window_state
-            .lock()
-            .unwrap()
-            .set_min_inner_size(min_size);
+        self.window_state.lock().unwrap().set_min_inner_size(min_size);
         // NOTE: Requires commit to be applied.
         self.request_redraw();
     }
@@ -352,10 +333,7 @@ impl Window {
     pub fn set_max_inner_size(&self, max_size: Option<Size>) {
         let scale_factor = self.scale_factor();
         let max_size = max_size.map(|size| size.to_logical(scale_factor));
-        self.window_state
-            .lock()
-            .unwrap()
-            .set_max_inner_size(max_size);
+        self.window_state.lock().unwrap().set_max_inner_size(max_size);
         // NOTE: Requires commit to be applied.
         self.request_redraw();
     }
@@ -379,10 +357,7 @@ impl Window {
 
     #[inline]
     pub fn set_transparent(&self, transparent: bool) {
-        self.window_state
-            .lock()
-            .unwrap()
-            .set_transparent(transparent);
+        self.window_state.lock().unwrap().set_transparent(transparent);
     }
 
     #[inline]
@@ -405,10 +380,7 @@ impl Window {
 
     #[inline]
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), ExternalError> {
-        self.window_state
-            .lock()
-            .unwrap()
-            .drag_resize_window(direction)
+        self.window_state.lock().unwrap().drag_resize_window(direction)
     }
 
     #[inline]
@@ -516,7 +488,7 @@ impl Window {
         match fullscreen {
             Some(Fullscreen::Exclusive(_)) => {
                 warn!("`Fullscreen::Exclusive` is ignored on Wayland");
-            }
+            },
             #[cfg_attr(not(x11_platform), allow(clippy::bind_instead_of_map))]
             Some(Fullscreen::Borderless(monitor)) => {
                 let output = monitor.and_then(|monitor| match monitor {
@@ -526,7 +498,7 @@ impl Window {
                 });
 
                 self.window.set_fullscreen(output.as_ref())
-            }
+            },
             None => self.window.unset_fullscreen(),
         }
     }
@@ -543,10 +515,7 @@ impl Window {
 
     #[inline]
     pub fn set_cursor_visible(&self, visible: bool) {
-        self.window_state
-            .lock()
-            .unwrap()
-            .set_cursor_visible(visible);
+        self.window_state.lock().unwrap().set_cursor_visible(visible);
     }
 
     pub fn request_user_attention(&self, request_type: Option<UserAttentionType>) {
@@ -555,7 +524,7 @@ impl Window {
             None => {
                 warn!("`request_user_attention` isn't supported");
                 return;
-            }
+            },
         };
 
         // Urgency is only removed by the compositor and there's no need to raise urgency when it
@@ -630,34 +599,147 @@ impl Window {
         }
     }
 
+    /// Wake the event loop when an IME operation wrote a protocol request.
+    ///
+    /// A protocol request from a background thread is not visible to the loop by itself. Even a
+    /// clear/reset/purpose transition with no visible preedit must flush its disable/enable/commit
+    /// instead of waiting for an unrelated event.
+    fn wake_for_ime_state(
+        &self,
+        update: crate::platform_impl::linux::wayland::window::state::ImeStateUpdate,
+    ) {
+        if update.sent {
+            self.event_loop_awakener.ping();
+        }
+    }
+
     #[inline]
     pub fn set_ime_cursor_area(&self, position: Position, size: Size) {
-        let window_state = self.window_state.lock().unwrap();
-        if window_state.ime_allowed() {
-            let scale_factor = window_state.scale_factor();
-            let position = position.to_logical(scale_factor);
-            let size = size.to_logical(scale_factor);
-            window_state.set_ime_cursor_area(position, size);
-        }
+        let mut window_state = self.window_state.lock().unwrap();
+        // Keep the desired area even while IME is disabled: a later enable must publish the
+        // current field's caret, not the area cached before focus moved.
+        let scale_factor = window_state.scale_factor();
+        let position = position.to_logical(scale_factor);
+        let size = size.to_logical(scale_factor);
+        let update = window_state.set_ime_cursor_area(position, size);
+        drop(window_state);
+        self.wake_for_ime_state(update);
     }
 
     #[inline]
     pub fn set_ime_allowed(&self, allowed: bool) {
         let mut window_state = self.window_state.lock().unwrap();
 
-        if window_state.ime_allowed() != allowed && window_state.set_ime_allowed(allowed) {
-            let event = WindowEvent::Ime(if allowed { Ime::Enabled } else { Ime::Disabled });
-            self.window_events_sink
-                .lock()
-                .unwrap()
-                .push_window_event(event, self.window_id);
-            self.event_loop_awakener.ping();
+        if window_state.ime_allowed() != allowed {
+            let update = window_state.set_ime_allowed(allowed);
+            drop(window_state);
+            if let Some(sequence) = update.boundary {
+                let event = WindowEvent::Ime(if allowed { Ime::Enabled } else { Ime::Disabled });
+                self.window_events_sink.lock().unwrap().push_window_event_at(
+                    sequence,
+                    event,
+                    self.window_id,
+                );
+            }
+            self.wake_for_ime_state(update);
         }
     }
 
     #[inline]
     pub fn set_ime_purpose(&self, purpose: ImePurpose) {
-        self.window_state.lock().unwrap().set_ime_purpose(purpose);
+        let mut window_state = self.window_state.lock().unwrap();
+        let update = window_state.set_ime_purpose(purpose);
+        drop(window_state);
+        if let Some(sequence) = update.boundary {
+            self.window_events_sink.lock().unwrap().push_window_event_at(
+                sequence,
+                WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+                self.window_id,
+            );
+        }
+        self.wake_for_ime_state(update);
+    }
+
+    #[inline]
+    pub fn set_ime_surrounding_text_with_change_cause(
+        &self,
+        text: &str,
+        cursor: usize,
+        anchor: usize,
+        cause: crate::platform::wayland::ImeTextChangeCause,
+    ) {
+        let mut window_state = self.window_state.lock().unwrap();
+        let update =
+            window_state.set_ime_surrounding_text_with_change_cause(text, cursor, anchor, cause);
+        drop(window_state);
+        self.wake_for_ime_state(update);
+    }
+
+    #[inline]
+    pub fn clear_ime_surrounding_text(&self) {
+        let mut window_state = self.window_state.lock().unwrap();
+        let update = window_state.clear_ime_surrounding_text();
+        drop(window_state);
+        if let Some(sequence) = update.boundary {
+            self.window_events_sink.lock().unwrap().push_window_event_at(
+                sequence,
+                WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+                self.window_id,
+            );
+        }
+        self.wake_for_ime_state(update);
+    }
+
+    #[inline]
+    pub fn take_ime_delete_surrounding(
+        &self,
+    ) -> Option<crate::platform::wayland::ImeDeleteSurrounding> {
+        self.window_state.lock().unwrap().ime_delete_surrounding.take()
+    }
+
+    #[inline]
+    pub fn reset_ime(&self) {
+        let mut window_state = self.window_state.lock().unwrap();
+        if window_state.ime_allowed() {
+            let update = window_state.reset_ime();
+            drop(window_state);
+            if let Some(sequence) = update.boundary {
+                let event = WindowEvent::Ime(Ime::Preedit(String::new(), None));
+                self.window_events_sink.lock().unwrap().push_window_event_at(
+                    sequence,
+                    event,
+                    self.window_id,
+                );
+            }
+            self.wake_for_ime_state(update);
+        }
+    }
+
+    #[inline]
+    pub fn reset_ime_with_request(&self, request_id: u64) {
+        let update = publish_requested_ime_reset(
+            &self.window_state,
+            |window_state| window_state.ime_allowed().then(|| window_state.reset_ime_with_fence()),
+            |update, completion| {
+                let mut sink = self.window_events_sink.lock().unwrap();
+                if let Some(sequence) = update.boundary {
+                    sink.push_window_event_at(
+                        sequence,
+                        WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+                        self.window_id,
+                    );
+                }
+                sink.push_window_event_at(
+                    completion,
+                    WindowEvent::ImeResetCompleted { request_id },
+                    self.window_id,
+                );
+            },
+        );
+        if let Some(update) = update {
+            // Even without entered input, the locally queued fence must be delivered.
+            self.wake_for_ime_state(state::ImeStateUpdate { sent: true, ..update });
+        }
     }
 
     #[inline]
@@ -752,7 +834,7 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        self.window_requests.closed.store(true, Ordering::Relaxed);
+        self.window_requests.closed.store(true, Ordering::Release);
         self.event_loop_awakener.ping();
     }
 }
@@ -768,8 +850,16 @@ pub struct WindowRequests {
 }
 
 impl WindowRequests {
+    /// Whether the application has dropped the window.
+    ///
+    /// The event loop reads this before delivering every queued IME event. It is a window-scoped
+    /// tombstone that does not depend on a seat's text-input object still being alive.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     pub fn take_closed(&self) -> bool {
-        self.closed.swap(false, Ordering::Relaxed)
+        self.closed.swap(false, Ordering::AcqRel)
     }
 
     pub fn take_redraw_requested(&self) -> bool {
@@ -794,5 +884,168 @@ impl TryFrom<&str> for Theme {
         } else {
             Err(())
         }
+    }
+}
+
+/// Run the requested native transition and publish its reserved events.
+fn publish_requested_ime_reset<S>(
+    window_state: &Mutex<S>,
+    transition: impl FnOnce(&mut S) -> Option<(state::ImeStateUpdate, u64)>,
+    publish: impl FnOnce(state::ImeStateUpdate, u64),
+) -> Option<state::ImeStateUpdate> {
+    let mut window_state = window_state.lock().unwrap();
+    let (update, completion) = transition(&mut window_state)?;
+    // Keep admission closed until the reserved events exist in the shared sink. Sequence
+    // sorting cannot repair a suffix that an event loop already drained before publication.
+    // The production publisher only takes the sink lock; it never calls application code.
+    publish(update, completion);
+    drop(window_state);
+    Some(update)
+}
+
+#[cfg(test)]
+mod requested_ime_publication_tests {
+    use std::sync::{mpsc, Arc, Barrier, Mutex, TryLockError};
+
+    use super::state::ImeStateUpdate;
+    use super::{publish_requested_ime_reset, EventSink, WindowId};
+    use crate::event::{Event, Ime, WindowEvent};
+    use crate::platform_impl::wayland::event_loop::sink::next_sequence;
+
+    #[test]
+    fn requested_reset_blocks_suffix_admission_until_the_fence_is_published() {
+        let state = Arc::new(Mutex::new(()));
+        let synthetic = Arc::new(Mutex::new(EventSink::new()));
+        let release = Arc::new(Barrier::new(2));
+        let (publishing, ready) = mpsc::channel();
+        let window = WindowId::from(1);
+        let worker = {
+            let state = Arc::clone(&state);
+            let synthetic = Arc::clone(&synthetic);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                publish_requested_ime_reset(
+                    &state,
+                    |_| Some((ImeStateUpdate::default(), next_sequence())),
+                    |_, sequence| {
+                        // Pause in the production publication callback after ticket reservation.
+                        publishing.send(()).unwrap();
+                        release.wait();
+                        synthetic.lock().unwrap().push_window_event_at(
+                            sequence,
+                            WindowEvent::ImeResetCompleted { request_id: 7 },
+                            window,
+                        );
+                    },
+                );
+            })
+        };
+        ready.recv().unwrap();
+        let mut delivered = Vec::new();
+        let admitted_early = match state.try_lock() {
+            Ok(_admission) => {
+                let mut protocol = EventSink::new();
+                protocol.push_window_event(
+                    WindowEvent::Ime(Ime::Preedit("new".into(), Some((3, 3)))),
+                    window,
+                );
+                protocol.append_ordered(&mut synthetic.lock().unwrap());
+                // This is a completed drain, not a sort performed after both sinks were filled.
+                delivered.extend(protocol.drain_deliverable());
+                true
+            },
+            Err(TryLockError::WouldBlock) => false,
+            Err(error) => panic!("window state failed: {error}"),
+        };
+        release.wait();
+        worker.join().unwrap();
+        let mut protocol = EventSink::new();
+        if !admitted_early {
+            let _admission = state.lock().unwrap();
+            protocol.push_window_event(
+                WindowEvent::Ime(Ime::Preedit("new".into(), Some((3, 3)))),
+                window,
+            );
+        }
+        protocol.append_ordered(&mut synthetic.lock().unwrap());
+        delivered.extend(protocol.drain_deliverable());
+        assert_eq!(delivered.into_iter().map(|(event, _)| event).collect::<Vec<_>>(), vec![
+            Event::WindowEvent {
+                window_id: crate::window::WindowId(window),
+                event: WindowEvent::ImeResetCompleted { request_id: 7 },
+            },
+            Event::WindowEvent {
+                window_id: crate::window::WindowId(window),
+                event: WindowEvent::Ime(Ime::Preedit("new".into(), Some((3, 3)))),
+            },
+        ]);
+    }
+
+    #[test]
+    fn concurrent_empty_resets_publish_in_transition_order() {
+        let state = Arc::new(Mutex::new(()));
+        let synthetic = Arc::new(Mutex::new(EventSink::new()));
+        let release = Arc::new(Barrier::new(2));
+        let (publishing, ready) = mpsc::channel();
+        let window = WindowId::from(1);
+        let first = {
+            let state = Arc::clone(&state);
+            let synthetic = Arc::clone(&synthetic);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                publish_requested_ime_reset(
+                    &state,
+                    |_| Some((ImeStateUpdate::default(), next_sequence())),
+                    |_, sequence| {
+                        publishing.send(()).unwrap();
+                        release.wait();
+                        synthetic.lock().unwrap().push_window_event_at(
+                            sequence,
+                            WindowEvent::ImeResetCompleted { request_id: 7 },
+                            window,
+                        );
+                    },
+                );
+            })
+        };
+        ready.recv().unwrap();
+        let admission_blocked = matches!(state.try_lock(), Err(TryLockError::WouldBlock));
+        let (starting, started) = mpsc::channel();
+        let second = {
+            let state = Arc::clone(&state);
+            let synthetic = Arc::clone(&synthetic);
+            std::thread::spawn(move || {
+                starting.send(()).unwrap();
+                publish_requested_ime_reset(
+                    &state,
+                    |_| Some((ImeStateUpdate::default(), next_sequence())),
+                    |_, sequence| {
+                        synthetic.lock().unwrap().push_window_event_at(
+                            sequence,
+                            WindowEvent::ImeResetCompleted { request_id: 8 },
+                            window,
+                        )
+                    },
+                );
+            })
+        };
+        started.recv().unwrap();
+        release.wait();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert!(admission_blocked, "another reset could pass an unpublished empty reset");
+        let completions: Vec<_> = synthetic
+            .lock()
+            .unwrap()
+            .drain_deliverable()
+            .into_iter()
+            .filter_map(|(event, _)| match event {
+                Event::WindowEvent {
+                    event: WindowEvent::ImeResetCompleted { request_id }, ..
+                } => Some(request_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completions, vec![7, 8]);
     }
 }
