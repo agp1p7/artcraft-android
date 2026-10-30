@@ -2,7 +2,6 @@ import os
 import re
 import sys
 from pathlib import Path
-from patch_lightcraft_export_progress import PANEL as BASE_PANEL
 
 HOST = r"""
 static LIGHTCRAFT_EXPORT_APP: std::sync::Mutex<Option<android_activity::AndroidApp>> = std::sync::Mutex::new(None);
@@ -147,14 +146,39 @@ def prepare():
 
 
 def panel():
-    text = replace_one(BASE_PANEL, '    if app.export.is_none() && app.last_export_result.is_none() { return; }\n', '', 'always-visible-panel')
-    text = replace_one(text, '.exact_size(112.0)', '.exact_size(148.0)', 'panel-height')
     marker = re.sub(r'[^0-9a-zA-Z_-]', '', os.environ.get('GITHUB_SHA', 'local'))[:7]
-    text = replace_one(text, '        .show(ui, |ui| {\n', '        .show(ui, |ui| {\n            ui.label("匯出進度 · build ' + marker + '");\n', 'build-marker')
-    text = replace_one(text, '                    let total = task.total;\n', '                    let total = task.total;\n                    let io = local_export_io();\n', 'io-snapshot')
-    text = replace_one(text, '                    ui.label("等待寫入完成；成功與失敗數將於結束後顯示。");', '                    ui.label(format!("檔案寫入：成功 {} · 失敗 {}（成功含目的地提交）", io.0, io.1));\n                    ui.label("照片成功／失敗／跳過數，以結束後結果為準。");', 'io-label')
-    text = replace_one(text, '                }\n            });', '                } else {\n                    ui.label(if app.services.write_shared.is_some() { "背景匯出已連接，等待開始匯出。" } else { "背景匯出未連接：此版本未完成整合。" });\n                }\n            });', 'idle-state')
-    return text
+    return r"""
+pub fn local_export_progress_panel(app: &mut crate::LightcraftApp, ui: &mut egui::Ui) {
+    let Some(task) = &app.export else { return; };
+    let status = task.status();
+    let total = task.total;
+    let started = status.get("done").and_then(Value::as_u64).unwrap_or(0).min(total as u64);
+    let current = status.get("current").and_then(Value::as_str).unwrap_or("");
+    let io = local_export_io();
+    let width = (ui.ctx().content_rect().width() - 32.0).clamp(160.0, 340.0);
+    let position = ui.ctx().content_rect().center() - egui::vec2(width * 0.5, 70.0);
+    egui::Window::new("匯出進度")
+        .id(egui::Id::new("lightcraft_export_progress_window"))
+        .collapsible(false)
+        .resizable(false)
+        .movable(true)
+        .default_width(width)
+        .default_pos(position)
+        .show(ui.ctx(), |ui| {
+            ui.set_max_width(width);
+            ui.label(format!("已開始 {} / {} 張（非完成數）", started, total));
+            let fraction = if total > 1 { Some((started as f32 / total as f32).min(0.99)) } else { None };
+            crate::progress::Progress::new(fraction).widget("progress:localExport").show(ui);
+            if !current.is_empty() {
+                ui.add(egui::Label::new(format!("目前：{}", current)).truncate());
+            }
+            ui.label(format!("檔案寫入：成功 {} · 失敗 {}", io.0, io.1));
+            ui.small("寫入成功包含目的地提交；照片結果於結束時提示。");
+            ui.small("build __BUILD__");
+        });
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+}
+""".replace('__BUILD__', marker)
 
 
 def patch(root):

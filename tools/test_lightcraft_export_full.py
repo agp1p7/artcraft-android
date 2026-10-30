@@ -1,5 +1,5 @@
 import unittest
-from patch_lightcraft_export_full import code_mask, wrap_services
+from patch_lightcraft_export_full import code_mask, panel, wrap_services
 
 
 class ServicesInitializerTests(unittest.TestCase):
@@ -52,6 +52,29 @@ class ServicesInitializerTests(unittest.TestCase):
     def test_unbalanced_initializer_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, 'unbalanced braces'):
             wrap_services('let services = Services {')
+
+
+class FloatingProgressTests(unittest.TestCase):
+    def test_window_source_is_task_gated(self):
+        source = panel()
+        guard = 'let Some(task) = &app.export else { return; };'
+        self.assertIn(guard, source)
+        self.assertLess(source.index(guard), source.index('egui::Window::new'))
+        self.assertNotIn('last_export_result', source)
+
+    def test_no_persistent_bottom_panel(self):
+        source = panel()
+        self.assertNotIn('Panel::bottom', source)
+        self.assertNotIn('exact_size', source)
+        self.assertIn('.show(ui.ctx(), |ui|', source)
+
+    def test_small_draggable_window(self):
+        source = panel()
+        self.assertIn('.movable(true)', source)
+        self.assertIn('.resizable(false)', source)
+        self.assertIn('.collapsible(false)', source)
+        self.assertIn('local_export_io()', source)
+        self.assertIn('request_repaint_after', source)
 
 
 if __name__ == '__main__':
