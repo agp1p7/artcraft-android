@@ -94,19 +94,34 @@ def code_mask(text):
 def wrap_services(text):
     mask = code_mask(text)
     pattern = r'(?<![\w:])(?:\w+::)*Services\s*(?:::default\s*\(\s*\)|\{)'
-    matches = [m for m in re.finditer(pattern, mask) if not re.search(r'\b(?:struct|enum|impl|trait)\s*$', mask[:m.start()])]
-    if len(matches) != 1:
-        raise RuntimeError(f'Full-export phase=services-initializer expected=1 actual={len(matches)}')
-    m = matches[0]
-    end = m.end()
-    if mask[end - 1] == '{':
-        depth = 1
-        while end < len(mask) and depth:
-            depth += (mask[end] == '{') - (mask[end] == '}')
-            end += 1
-        if depth:
-            raise RuntimeError('Full-export phase=services-initializer unbalanced braces')
-    return text[:m.start()] + 'lightcraft_export_services(' + text[m.start():end] + ')' + text[end:]
+    raw_matches = list(re.finditer(pattern, mask))
+    ranges = []
+    for m in raw_matches:
+        prefix = mask[:m.start()]
+        if re.search(r'\b(?:struct|enum|impl|trait|for|let)\s*$', prefix):
+            continue
+        if re.search(r'->\s*(?:&\s*(?:\x27\w+\s*)?(?:mut\s+)?)?$', prefix):
+            continue
+        end = m.end()
+        if mask[end - 1] == '{':
+            depth = 1
+            while end < len(mask) and depth:
+                depth += (mask[end] == '{') - (mask[end] == '}')
+                end += 1
+            if depth:
+                raise RuntimeError('Full-export phase=services-initializer unbalanced braces')
+        ranges.append((m.start(), end))
+    outer = [(start, end) for start, end in ranges if not any(a < start and end <= b for a, b in ranges)]
+    print(f'Full-export Services scan raw={len(raw_matches)} initializers={len(ranges)} outer={len(outer)}', flush=True)
+    if len(outer) != 1:
+        details = []
+        for m in raw_matches:
+            line = text.count('\n', 0, m.start()) + 1
+            context = ' '.join(text[max(0, m.start() - 60):m.end() + 80].split())[:180]
+            details.append(f'line {line}: {context}')
+        raise RuntimeError(f'Full-export phase=services-initializer expected=1 actual={len(outer)} raw={len(raw_matches)} candidates={details}')
+    start, end = outer[0]
+    return text[:start] + 'lightcraft_export_services(' + text[start:end] + ')' + text[end:]
 
 
 def replace_one(text, old, new, phase):
@@ -117,6 +132,8 @@ def replace_one(text, old, new, phase):
 
 
 def prepare():
+    import subprocess
+    subprocess.run([sys.executable, str(Path(__file__).with_name('test_lightcraft_export_full.py'))], check=True)
     from patch_lightcraft_gpu_diagnostics_v2 import JAVA
     path = Path(__file__).resolve().parents[1] / 'templates/android/SafActivity.java'
     block = JAVA.replace('LightCraft GPU diagnostics v2', 'LightCraft GPU candidate v6-windowed-checked')
