@@ -1,4 +1,4 @@
-name: LightCraft GPU diagnostics APK
+name: Light craft local APK
 on:
   push:
     branches: [gpu-diagnostics-xiaomi-pad8pro]
@@ -19,8 +19,8 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install pillow
       - name: Check patch script syntax
-        run: python -m py_compile tools/install_denoise_hook.py tools/patch_lightcraft_denoise.py tools/patch_lightcraft_gpu_diagnostics.py
-      - name: Install GPU diagnostics hook
+        run: python -m py_compile tools/install_denoise_hook.py tools/patch_lightcraft_local_ui.py tools/local_ui_parts.py tools/patch_lightcraft_denoise.py tools/patch_lightcraft_gpu_diagnostics.py
+      - name: Install GPU and local UI hooks
         run: python tools/install_denoise_hook.py
       - uses: actions/setup-java@v4
         with:
@@ -35,33 +35,39 @@ jobs:
           targets: aarch64-linux-android
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
-      - name: Build isolated GPU diagnostics APK
+      - name: Build Light craft local APK
         env:
           ARTCRAFT_BUILD_TOOLS_VERSION: '35.0.0'
         run: |
           set -o pipefail
           mkdir -p logs output
-          bash build-debug.sh -lightcraft -tag=v0.14.0 -appname=LightCraft-GPU-Diag -packagename=com.artcraft.lightcraft.gpudiag 2>&1 | tee logs/gpu-diag-console.log
+          bash build-debug.sh -lightcraft -tag=v0.14.0 "-appname=Light craft local" -packagename=com.artcraft.lightcraft.gpudiag 2>&1 | tee logs/gpu-diag-console.log
+          shopt -s nullglob
+          apks=(output/*.apk)
+          test ${#apks[@]} -eq 1
+          mv -- "${apks[0]}" "output/Light craft local.apk"
       - name: Check APK archive integrity
         run: |
           shopt -s nullglob
           apks=(output/*.apk)
           test ${#apks[@]} -gt 0
           for apk in "${apks[@]}"; do unzip -tq "$apk"; done
-      - name: Upload GPU diagnostics APK
+      - name: Upload Light craft local APK
         uses: actions/upload-artifact@v4
         with:
-          name: lightcraft-0.14.0-gpu-diagnostics
+          name: Light craft local
           path: output/*.apk
           if-no-files-found: error
       - name: Upload build diagnostics and patched sources
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lightcraft-gpu-diagnostics-build-files
+          name: lightcraft-local-build-files
           path: |
             logs/
             source/lightcraft/apps/lightcraft-android/src/
             source/lightcraft/apps/lightcraft-android/Cargo.toml
             source/lightcraft/crates/gpu/src/
+            source/lightcraft/crates/ui-egui/src/
+            source/lightcraft/crates/engine/src/export.rs
           if-no-files-found: warn
